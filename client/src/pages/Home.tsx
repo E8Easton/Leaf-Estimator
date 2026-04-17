@@ -12,10 +12,11 @@ import {
   SERVICE_PLAN_PERKS,
   SERVICE_PLAN_DISCOUNTS,
   CHRISTMAS_LIGHT_OPTIONS,
+  FRENCH_PANE_MULTIPLIER,
+  frenchPanesToStandard,
   calculateEstimate,
   calculateChristmasEstimate,
   formatCurrency,
-  getTierForPanes,
   type ServiceKey,
   type ServicePlanType,
   type ChristmasLightType,
@@ -38,7 +39,6 @@ import {
   X,
   Copy,
   Check,
-  User,
 } from "lucide-react";
 
 // ── Mode config ──────────────────────────────────────────────────────────────
@@ -100,8 +100,6 @@ export default function Home() {
   const [appMode, setAppMode] = useState<AppMode>("windows");
   const modeConfig = MODE_CONFIG.find((m) => m.key === appMode)!;
 
-  // Customer / job info
-  const [customerName, setCustomerName] = useState("");
   const [copied, setCopied] = useState(false);
 
   // Window cleaning state
@@ -109,6 +107,7 @@ export default function Home() {
   const [frenchPaneCount, setFrenchPaneCount] = useState(0);
   const [selectedServices, setSelectedServices] = useState<Set<ServiceKey>>(new Set<ServiceKey>(["exterior"]));
   const [useScreenSpecial, setUseScreenSpecial] = useState(false);
+  const [useOnSiteScreenUpsell, setUseOnSiteScreenUpsell] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
 
   // Christmas lights state
@@ -124,15 +123,18 @@ export default function Home() {
 
   const estimate =
     appMode === "windows"
-      ? calculateEstimate(paneCount, frenchPaneCount, selectedServices, servicePlan, useScreenSpecial)
+      ? calculateEstimate(paneCount, frenchPaneCount, selectedServices, servicePlan, useScreenSpecial, {
+          onSiteScreenUpsell: useOnSiteScreenUpsell,
+        })
       : calculateChristmasEstimate(linearFeet, lightType, addGoveePanel, "none");
 
   // One-time price points (no plan discount)
   const calledOutPrice = estimate.subtotal;
   const alreadyOutPrice = Math.max(estimate.subtotal - 100, appMode === "windows" ? 125 : 0);
 
-  const totalPanes = appMode === "windows" ? paneCount + frenchPaneCount : 0;
-  const tier = appMode === "windows" ? getTierForPanes(totalPanes) : null;
+  const frenchEquivalent = appMode === "windows" ? frenchPanesToStandard(frenchPaneCount) : 0;
+  const totalPanes = appMode === "windows" ? paneCount + frenchEquivalent : 0;
+  const tier = appMode === "windows" ? estimate.tier : null;
   const currentTierIndex = tier ? PANE_TIERS.findIndex((t) => t.maxPanes === tier.maxPanes) : -1;
   const hasScreenSpecial = !!(tier?.screenSpecial) && selectedServices.has("screens");
   const hasAnyTotal = estimate.total > 0 || calledOutPrice > 0;
@@ -154,11 +156,11 @@ export default function Home() {
   };
 
   const reset = () => {
-    setCustomerName("");
     setPaneCount(0);
     setFrenchPaneCount(0);
     setSelectedServices(new Set<ServiceKey>(["exterior"]));
     setUseScreenSpecial(false);
+    setUseOnSiteScreenUpsell(false);
     setLinearFeet(0);
     setLightType("classic");
     setAddGoveePanel(false);
@@ -169,8 +171,39 @@ export default function Home() {
   const toggleService = useCallback((key: ServiceKey) => {
     setSelectedServices((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      const has = next.has(key);
+      if (has) {
+        next.delete(key);
+        // Interior can never exist without exterior.
+        if (key === "exterior") next.delete("interior");
+      } else {
+        next.add(key);
+        // Interior is always an add-on to exterior per quoting guide.
+        if (key === "interior") next.add("exterior");
+      }
+      return next;
+    });
+  }, []);
+
+  const applyBasePreset = useCallback((preset: "outside" | "both") => {
+    setSelectedServices((prev) => {
+      const next = new Set(prev);
+      // Preserve add-ons while changing the base.
+      const keepScreens = next.has("screens");
+      const keepTracks = next.has("tracks");
+
+      next.delete("exterior");
+      next.delete("interior");
+
+      if (preset === "outside") next.add("exterior");
+      if (preset === "both") {
+        next.add("exterior");
+        next.add("interior");
+      }
+
+      if (keepScreens) next.add("screens");
+      if (keepTracks) next.add("tracks");
+
       return next;
     });
   }, []);
@@ -182,7 +215,6 @@ export default function Home() {
 
     lines.push("🍃 Leaf Cleaning — Quote");
     lines.push("──────────────────────────");
-    if (customerName.trim()) lines.push(`Customer: ${customerName.trim()}`);
     lines.push(`Service: ${modeLabel}`);
     lines.push("");
 
@@ -296,23 +328,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ── Customer / Job Name ── */}
-        <div className="bg-white rounded-2xl border border-border shadow-sm px-4 py-3 flex items-center gap-3">
-          <User size={16} className="text-muted-foreground flex-shrink-0" />
-          <input
-            type="text"
-            value={customerName}
-            onChange={(e) => setCustomerName(e.target.value)}
-            placeholder="Customer name (optional)"
-            className="flex-1 bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground focus:outline-none"
-          />
-          {customerName && (
-            <button onClick={() => setCustomerName("")} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X size={14} />
-            </button>
-          )}
-        </div>
-
         {/* ══════════════════════════════════════════
             WINDOW CLEANING MODE
         ══════════════════════════════════════════ */}
@@ -384,7 +399,7 @@ export default function Home() {
                   <div className="flex items-center justify-between mb-2">
                     <div>
                       <p className="text-xs font-bold text-foreground font-display">French Panes</p>
-                      <p className="text-[11px] text-muted-foreground">Divided-light / grille windows — add to total</p>
+                      <p className="text-[11px] text-muted-foreground">Divided-light / grille windows — counted at ×{FRENCH_PANE_MULTIPLIER}</p>
                     </div>
                     {frenchPaneCount > 0 && (
                       <span className="text-xs font-bold text-primary bg-accent px-2 py-0.5 rounded-full font-display">
@@ -421,7 +436,7 @@ export default function Home() {
                   </div>
                   {frenchPaneCount > 0 && (
                     <p className="text-xs text-primary font-semibold mt-2 text-center font-display">
-                      Total: {totalPanes} panes ({paneCount} standard + {frenchPaneCount} French)
+                      Total: {totalPanes} panes ({paneCount} standard + {frenchEquivalent} French equiv.)
                     </p>
                   )}
                 </div>
@@ -433,7 +448,7 @@ export default function Home() {
                     <div>
                       <p className="text-xs text-accent-foreground/70 font-medium">Pricing Tier</p>
                       <p className="text-sm font-bold text-accent-foreground font-display">
-                        {tier ? tier.label : `Custom (${paneCount} panes)`}
+                        {tier ? tier.label : `Custom (${totalPanes} panes)`}
                       </p>
                     </div>
                     <div className="text-right">
@@ -467,6 +482,37 @@ export default function Home() {
               <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
                 <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>2</span>
                 <h2 className="font-bold text-foreground font-display">Select Services</h2>
+              </div>
+
+              {/* Quick presets for faster quoting */}
+              <div className="px-4 pt-4">
+                <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide font-display mb-2">
+                  Quick Pick
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => applyBasePreset("outside")}
+                    className={`h-11 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
+                      selectedServices.has("exterior") && !selectedServices.has("interior")
+                        ? "border-primary bg-accent text-primary"
+                        : "border-border bg-secondary text-foreground hover:bg-border"
+                    }`}
+                  >
+                    Exterior
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyBasePreset("both")}
+                    className={`h-11 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
+                      selectedServices.has("exterior") && selectedServices.has("interior")
+                        ? "border-primary bg-accent text-primary"
+                        : "border-border bg-secondary text-foreground hover:bg-border"
+                    }`}
+                  >
+                    Ext + Int
+                  </button>
+                </div>
               </div>
 
               <div className="p-4 grid grid-cols-2 gap-3">
@@ -512,10 +558,37 @@ export default function Home() {
                 })}
               </div>
 
+              {/* On-site upsell: screens for $60 when already there */}
+              {selectedServices.has("screens") && appMode === "windows" && !estimate.isCustom && (
+                <div className="px-4 pb-2">
+                  <button
+                    onClick={() => {
+                      const next = !useOnSiteScreenUpsell;
+                      setUseOnSiteScreenUpsell(next);
+                      if (next) setUseScreenSpecial(false);
+                    }}
+                    className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between transition-all duration-200 ${
+                      useOnSiteScreenUpsell ? "border-slate-400 bg-slate-50" : "border-border bg-secondary"
+                    }`}
+                  >
+                    <div className="text-left">
+                      <p className={`text-sm font-bold ${useOnSiteScreenUpsell ? "text-slate-700" : "text-foreground"}`}>
+                        On-site screen upsell
+                      </p>
+                      <p className="text-xs text-muted-foreground">If you’re already there: quote screens for $60</p>
+                    </div>
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${useOnSiteScreenUpsell ? "border-slate-400 bg-slate-400" : "border-border"}`}>
+                      {useOnSiteScreenUpsell && <div className="w-2 h-2 rounded-full bg-white" />}
+                    </div>
+                  </button>
+                </div>
+              )}
+
               {hasScreenSpecial && tier?.screenSpecial !== null && (
                 <div className="px-4 pb-4">
                   <button
                     onClick={() => setUseScreenSpecial(!useScreenSpecial)}
+                    disabled={useOnSiteScreenUpsell}
                     className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between transition-all duration-200 ${
                       useScreenSpecial ? "border-amber-400 bg-amber-50" : "border-border bg-secondary"
                     }`}
@@ -524,7 +597,9 @@ export default function Home() {
                       <Sparkles size={16} className={useScreenSpecial ? "text-amber-500" : "text-muted-foreground"} />
                       <div className="text-left">
                         <p className={`text-sm font-bold ${useScreenSpecial ? "text-amber-700" : "text-foreground"}`}>Screen Cleaning Special</p>
-                        <p className="text-xs text-muted-foreground">15 screens for $25</p>
+                        <p className="text-xs text-muted-foreground">
+                          {tier?.maxPanes === 25 ? "Up to 5 screens for $25" : "$25 special available"}
+                        </p>
                       </div>
                     </div>
                     <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${useScreenSpecial ? "border-amber-400 bg-amber-400" : "border-border"}`}>

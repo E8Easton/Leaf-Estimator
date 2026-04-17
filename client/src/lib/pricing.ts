@@ -189,7 +189,10 @@ export function calculateEstimate(
   frenchPanes: number,
   selectedServices: Set<ServiceKey>,
   servicePlan: ServicePlanType,
-  useScreenSpecial: boolean
+  useScreenSpecial: boolean,
+  opts: {
+    onSiteScreenUpsell?: boolean;
+  } = {}
 ): EstimateResult {
   const frenchEquivalent = frenchPanesToStandard(frenchPanes);
   const totalPanes = standardPanes + frenchEquivalent;
@@ -211,13 +214,18 @@ export function calculateEstimate(
   const breakdown: { label: string; price: number }[] = [];
   let subtotal = 0;
 
+  // Interior is never quoted standalone per quoting guide.
+  const hasExterior = selectedServices.has("exterior");
+  const hasInterior = selectedServices.has("interior");
+  const effectiveHasInterior = hasInterior && hasExterior;
+
   if (isCustom) {
-    if (selectedServices.has("exterior")) {
+    if (hasExterior) {
       const price = totalPanes * CUSTOM_PRICE_PER_PANE;
       breakdown.push({ label: `Exterior (${totalPanes} panes × $${CUSTOM_PRICE_PER_PANE})`, price });
       subtotal += price;
     }
-    if (selectedServices.has("interior")) {
+    if (effectiveHasInterior) {
       const price = Math.round(totalPanes * CUSTOM_PRICE_PER_PANE * 0.5);
       breakdown.push({ label: `Interior (${totalPanes} panes × $${CUSTOM_PRICE_PER_PANE * 0.5})`, price });
       subtotal += price;
@@ -233,23 +241,23 @@ export function calculateEstimate(
       subtotal += price;
     }
   } else {
-    if (selectedServices.has("exterior")) {
+    if (hasExterior) {
       breakdown.push({ label: "Exterior Window Cleaning", price: tier!.exterior });
       subtotal += tier!.exterior;
     }
-    if (selectedServices.has("interior")) {
+    if (effectiveHasInterior) {
       breakdown.push({ label: "Interior Window Cleaning", price: tier!.interior });
       subtotal += tier!.interior;
     }
     if (selectedServices.has("screens")) {
-      const screenPrice =
-        useScreenSpecial && tier!.screenSpecial !== null
-          ? tier!.screenSpecial
-          : tier!.screens;
-      const screenLabel =
-        useScreenSpecial && tier!.screenSpecial !== null
-          ? "Screen Cleaning (SPECIAL $25)"
-          : "Screen Cleaning";
+      const onSite = !!opts.onSiteScreenUpsell;
+      const hasSpecial = useScreenSpecial && tier!.screenSpecial !== null;
+      const screenPrice = onSite ? 60 : hasSpecial ? tier!.screenSpecial! : tier!.screens;
+      const screenLabel = onSite
+        ? "Screen Cleaning (ON-SITE UPSALE)"
+        : hasSpecial
+        ? "Screen Cleaning (SPECIAL $25)"
+        : "Screen Cleaning";
       breakdown.push({ label: screenLabel, price: screenPrice });
       subtotal += screenPrice;
     }
