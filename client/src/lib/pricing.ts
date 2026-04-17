@@ -16,11 +16,13 @@ export interface PaneTier {
   exterior: number;
   interior: number;
   screens: number;
+  /** Full-house track detailing; 0 = custom quote (not auto-priced here). */
   tracks: number;
   screenSpecial: number | null;
 }
 
-// Corrected prices from video [1] and [3]
+// Track Detailing (FULL HOUSE) — upsell with exterior only (not standalone).
+// ≤25 $100 | ≤40 $240 | ≤60 $320 | ≤80 $400 | ≤100 $480 | 101–120 & 121+ → custom quote (no auto price here).
 export const PANE_TIERS: PaneTier[] = [
   {
     label: "Up to 25 Panes",
@@ -79,6 +81,7 @@ export const PANE_TIERS: PaneTier[] = [
     exterior: 895,
     interior: 0,
     screens: 0,
+    /** 101–120 panes: full-house tracks are custom (quote in office). */
     tracks: 0,
     screenSpecial: null,
   },
@@ -235,10 +238,12 @@ export function calculateEstimate(
       breakdown.push({ label: `Screen Cleaning (est.)`, price });
       subtotal += price;
     }
-    if (selectedServices.has("tracks")) {
-      const price = Math.round(totalPanes * 4);
-      breakdown.push({ label: `Track Detailing (est.)`, price });
-      subtotal += price;
+    // Tracks: upsell with exterior only; 121+ full-house tracks = custom quote (no auto price).
+    if (hasExterior && selectedServices.has("tracks")) {
+      breakdown.push({
+        label: "Track Detailing (FULL HOUSE — custom quote)",
+        price: 0,
+      });
     }
   } else {
     if (hasExterior) {
@@ -261,9 +266,16 @@ export function calculateEstimate(
       breakdown.push({ label: screenLabel, price: screenPrice });
       subtotal += screenPrice;
     }
-    if (selectedServices.has("tracks")) {
-      breakdown.push({ label: "Track Detailing", price: tier!.tracks });
-      subtotal += tier!.tracks;
+    if (hasExterior && selectedServices.has("tracks")) {
+      const trackPrice = tier!.tracks;
+      breakdown.push({
+        label:
+          trackPrice === 0
+            ? "Track Detailing (FULL HOUSE — custom quote)"
+            : "Track Detailing (FULL HOUSE)",
+        price: trackPrice,
+      });
+      subtotal += trackPrice;
     }
   }
 

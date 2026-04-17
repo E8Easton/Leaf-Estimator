@@ -68,7 +68,8 @@ function getUpsellLinePrice(
   if (kind === "screens" && screenOpts.onSite) return 60;
   if (q.isCustom) {
     if (kind === "screens") return Math.round(q.totalPanesForTier * 2.5);
-    return Math.round(q.totalPanesForTier * 4);
+    if (kind === "tracks") return 0;
+    return 0;
   }
   const tier = resolveTierForQuote(q);
   if (!tier) return 0;
@@ -207,7 +208,13 @@ const SERVICE_CONFIG: {
 }[] = [
   { key: "exterior", label: "Exterior", description: "Outside glass surfaces", icon: <HomeIcon size={20} />, color: "text-blue-500" },
   { key: "screens", label: "Screens", description: "Window screen cleaning", icon: <Grid3x3 size={20} />, color: "text-amber-500" },
-  { key: "tracks", label: "Tracks", description: "Window track detailing", icon: <Wind size={20} />, color: "text-rose-500" },
+  {
+    key: "tracks",
+    label: "Tracks",
+    description: "Full-house track detailing (add-on with exterior)",
+    icon: <Wind size={20} />,
+    color: "text-rose-500",
+  },
 ];
 
 const UPSELL_SERVICE_CONFIG = SERVICE_CONFIG.filter((s) => s.key === "screens" || s.key === "tracks");
@@ -889,21 +896,30 @@ export default function Home() {
               <div className="p-4 grid grid-cols-2 gap-3">
                 {UPSELL_SERVICE_CONFIG.map((svc) => {
                   const isSelected = selectedServices.has(svc.key);
-                  const price = tier
-                    ? svc.key === "screens" && useScreenSpecial && tier.screenSpecial !== null
-                      ? tier.screenSpecial
-                      : (tier[svc.key as keyof typeof tier] as number)
-                    : oneTimeEstimate.isCustom                      ? svc.key === "screens"
-                        ? Math.round(totalPanes * 2.5)
-                        : Math.round(totalPanes * 4)
-                      : null;
+                  let price: number | null = null;
+                  if (tier) {
+                    if (svc.key === "screens" && useScreenSpecial && tier.screenSpecial !== null) {
+                      price = tier.screenSpecial;
+                    } else if (svc.key === "screens") {
+                      price = tier.screens;
+                    } else {
+                      price = tier.tracks;
+                    }
+                  } else if (oneTimeEstimate.isCustom) {
+                    if (svc.key === "screens") price = Math.round(totalPanes * 2.5);
+                    else price = null;
+                  }
+                  const tracksCustomQuote =
+                    svc.key === "tracks" && (oneTimeEstimate.isCustom || (tier !== null && tier.tracks === 0));
                   const isUnavailable =
                     tier !== null &&
-                    (tier[svc.key as keyof typeof tier] as number) === 0;
+                    (tier[svc.key as keyof typeof tier] as number) === 0 &&
+                    svc.key !== "tracks";
 
                   return (
                     <button
                       key={svc.key}
+                      type="button"
                       onClick={() => !isUnavailable && toggleService(svc.key)}
                       disabled={isUnavailable}
                       className={`service-card relative rounded-2xl border-2 p-4 text-left transition-all duration-200 active:scale-[0.97] ${
@@ -917,10 +933,13 @@ export default function Home() {
                       <div className={`mb-2 ${isSelected ? "text-amber-600" : svc.color}`}>{svc.icon}</div>
                       <p className={`font-bold text-sm font-display ${isSelected ? "text-amber-800" : "text-foreground"}`}>{svc.label}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">{svc.description}</p>
-                      {price !== null && price > 0 && !isUnavailable && (
+                      {price !== null && price > 0 && (
                         <p className={`text-sm font-bold mt-2 font-display ${isSelected ? "text-amber-700" : "text-muted-foreground"}`}>
                           {formatCurrency(price)}
                         </p>
+                      )}
+                      {tracksCustomQuote && (
+                        <p className="text-xs font-semibold text-rose-700 mt-2">Full house — custom quote</p>
                       )}
                       {isUnavailable && <p className="text-xs text-muted-foreground mt-2">Custom quote</p>}
                       {isSelected && !isUnavailable && (
@@ -1442,6 +1461,7 @@ export default function Home() {
                   onSite: upsellModalOnSite,
                   special: upsellModalSpecial,
                 });
+                const tracksCustom = kind === "tracks" && price === 0;
                 const checked = upsellModalKinds.has(kind);
                 return (
                   <button
@@ -1463,11 +1483,17 @@ export default function Home() {
                     <div>
                       <p className="font-bold font-display text-foreground">{label}</p>
                       <p className="text-xs text-muted-foreground">
-                        {inQuote ? "Already in logged quote — won’t double-count revenue" : `Adds ${formatCurrency(price)} if selected`}
+                        {inQuote
+                          ? "Already in logged quote — won’t double-count revenue"
+                          : tracksCustom
+                            ? "Full-house tracks — custom quote (not auto-added to revenue)"
+                            : `Adds ${formatCurrency(price)} if selected`}
                       </p>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <p className="text-lg font-extrabold font-display text-amber-700">{formatCurrency(price)}</p>
+                      <p className="text-lg font-extrabold font-display text-amber-700">
+                        {tracksCustom ? "Custom" : formatCurrency(price)}
+                      </p>
                       {checked && <CheckCircle2 size={18} className="text-amber-600 inline-block mt-1" />}
                     </div>
                   </button>
