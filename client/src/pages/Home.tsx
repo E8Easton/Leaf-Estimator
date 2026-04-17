@@ -739,8 +739,42 @@ export default function Home() {
   const showPage = (n: number) => layoutMode === "scroll" || pageIndex === n;
   const PAGE_LAST = 3;
 
+  const renderInlineStepNav = (step: number) => {
+    if (layoutMode !== "pages" || pageIndex !== step) return null;
+    return (
+      <div
+        className="mt-4 rounded-2xl border border-border bg-card px-3 py-3 shadow-sm"
+        style={{ paddingBottom: "max(8px, env(safe-area-inset-bottom))" }}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            disabled={pageIndex <= 0}
+            onClick={() => setPageIndex((i) => Math.max(0, i - 1))}
+            className="h-11 px-3 rounded-xl border border-border bg-white font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
+          >
+            <ChevronLeft size={18} aria-hidden />
+            Back
+          </button>
+          <p className="text-xs font-bold text-muted-foreground font-display text-center flex-1 min-w-0">
+            Step {pageIndex + 1} / {PAGE_LAST + 1}
+          </p>
+          <button
+            type="button"
+            disabled={pageIndex >= PAGE_LAST}
+            onClick={() => setPageIndex((i) => Math.min(PAGE_LAST, i + 1))}
+            className="h-11 px-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
+          >
+            Next
+            <ChevronRight size={18} aria-hidden />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className={`min-h-screen bg-background ${layoutMode === "pages" ? "pb-28" : "pb-10"}`}>
+    <div className="min-h-screen bg-background pb-10">
 
       {/* ── Sticky Header ── */}
       <div
@@ -985,6 +1019,7 @@ export default function Home() {
                 </div>
               )}
             </div>
+            {renderInlineStepNav(0)}
             </>
             )}
 
@@ -1152,6 +1187,7 @@ export default function Home() {
                 </div>
               )}
             </div>
+            {renderInlineStepNav(1)}
           </>
           )}
           </>
@@ -1360,6 +1396,7 @@ export default function Home() {
             </div>
           </div>
         )}
+        {renderInlineStepNav(2)}
 
         {/* ══════════════════════════════════════════
             SALES TRACKER
@@ -1616,6 +1653,7 @@ export default function Home() {
             )}
           </div>
         </div>
+        {renderInlineStepNav(3)}
         </>
         )}
 
@@ -1624,37 +1662,6 @@ export default function Home() {
           Leaf Cleaning · Spotless Views. Every Time.
         </p>
       </div>
-
-      {layoutMode === "pages" && (
-        <div
-          className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-card/95 backdrop-blur-md px-4 py-3"
-          style={{ paddingBottom: "max(12px, env(safe-area-inset-bottom))" }}
-        >
-          <div className="max-w-[480px] mx-auto flex items-center justify-between gap-3">
-            <button
-              type="button"
-              disabled={pageIndex <= 0}
-              onClick={() => setPageIndex((i) => Math.max(0, i - 1))}
-              className="h-11 px-3 rounded-xl border border-border bg-white font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
-            >
-              <ChevronLeft size={18} />
-              Back
-            </button>
-            <p className="text-xs font-bold text-muted-foreground font-display text-center flex-1">
-              Step {pageIndex + 1} / {PAGE_LAST + 1}
-            </p>
-            <button
-              type="button"
-              disabled={pageIndex >= PAGE_LAST}
-              onClick={() => setPageIndex((i) => Math.min(PAGE_LAST, i + 1))}
-              className="h-11 px-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
-            >
-              Next
-              <ChevronRight size={18} />
-            </button>
-          </div>
-        </div>
-      )}
 
       {saleModalOpen && activeQuoteTarget && (
         <div
