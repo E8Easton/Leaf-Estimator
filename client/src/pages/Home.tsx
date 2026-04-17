@@ -15,6 +15,7 @@ import {
   FRENCH_PANE_MULTIPLIER,
   frenchPanesToStandard,
   calculateEstimate,
+  CUSTOM_PRICE_PER_PANE,
   formatCurrency,
   type PaneTier,
   type ServiceKey,
@@ -205,13 +206,14 @@ const SERVICE_CONFIG: {
   color: string;
 }[] = [
   { key: "exterior", label: "Exterior", description: "Outside glass surfaces", icon: <HomeIcon size={20} />, color: "text-blue-500" },
-  { key: "interior", label: "Interior", description: "Inside glass surfaces", icon: <Layers size={20} />, color: "text-violet-500" },
   { key: "screens", label: "Screens", description: "Window screen cleaning", icon: <Grid3x3 size={20} />, color: "text-amber-500" },
   { key: "tracks", label: "Tracks", description: "Window track detailing", icon: <Wind size={20} />, color: "text-rose-500" },
 ];
 
-const BASE_SERVICE_CONFIG = SERVICE_CONFIG.filter((s) => s.key === "exterior" || s.key === "interior");
 const UPSELL_SERVICE_CONFIG = SERVICE_CONFIG.filter((s) => s.key === "screens" || s.key === "tracks");
+
+/** Saved on quotes; recurring plans are exterior-only in this app. */
+const PLAN_BUNDLE_ACTIVE = "exterior" as const;
 
 const PLAN_CARD_STYLES: Record<
   ServicePlanType,
@@ -292,7 +294,6 @@ export default function Home() {
   const [selectedServices, setSelectedServices] = useState<Set<ServiceKey>>(new Set<ServiceKey>(["exterior"]));
   const [useScreenSpecial, setUseScreenSpecial] = useState(false);
   const [useOnSiteScreenUpsell, setUseOnSiteScreenUpsell] = useState(false);
-  const [planBundle, setPlanBundle] = useState<"exterior" | "exterior+interior">("exterior");
   const [showInfo, setShowInfo] = useState(false);
 
   // Shared state
@@ -314,6 +315,15 @@ export default function Home() {
     }
   }, [layoutMode]);
 
+  useEffect(() => {
+    setSelectedServices((prev) => {
+      const next = new Set(prev);
+      next.delete("interior");
+      if (!next.has("exterior")) next.add("exterior");
+      return next;
+    });
+  }, []);
+
   const isWindows = true;
 
   // 1) One-time visit quote (includes any selected add-ons; no plan discount)
@@ -324,11 +334,8 @@ export default function Home() {
   // 2) Recurring plan quote (bundle only; screens/tracks excluded by default)
   const planBundleServices = useCallback(() => {
     if (!isWindows) return new Set<ServiceKey>();
-    const s = new Set<ServiceKey>();
-    s.add("exterior");
-    if (planBundle === "exterior+interior") s.add("interior");
-    return s;
-  }, [isWindows, planBundle]);
+    return new Set<ServiceKey>(["exterior"]);
+  }, [isWindows]);
 
   const planEstimate = calculateEstimate(paneCount, frenchPaneCount, planBundleServices(), servicePlan, false);
 
@@ -363,7 +370,6 @@ export default function Home() {
     setSelectedServices(new Set<ServiceKey>(["exterior"]));
     setUseScreenSpecial(false);
     setUseOnSiteScreenUpsell(false);
-    setPlanBundle("exterior");
     setServicePlan("none");
     setShowBreakdown(false);
     setCopied(false);
@@ -377,46 +383,16 @@ export default function Home() {
   };
 
   const toggleService = useCallback((key: ServiceKey) => {
+    if (key === "exterior" || key === "interior") return;
     setSelectedServices((prev) => {
       const next = new Set(prev);
-      const has = next.has(key);
-      if (has) {
-        next.delete(key);
-        // Interior can never exist without exterior.
-        if (key === "exterior") next.delete("interior");
-      } else {
-        next.add(key);
-        // Interior is always an add-on to exterior per quoting guide.
-        if (key === "interior") next.add("exterior");
-      }
-      return next;
-    });
-  }, []);
-
-  const applyBasePreset = useCallback((preset: "outside" | "both") => {
-    setSelectedServices((prev) => {
-      const next = new Set(prev);
-      // Preserve add-ons while changing the base.
-      const keepScreens = next.has("screens");
-      const keepTracks = next.has("tracks");
-
-      next.delete("exterior");
+      next.add("exterior");
       next.delete("interior");
-
-      if (preset === "outside") next.add("exterior");
-      if (preset === "both") {
-        next.add("exterior");
-        next.add("interior");
-      }
-
-      if (keepScreens) next.add("screens");
-      if (keepTracks) next.add("tracks");
-
+      const has = next.has(key);
+      if (has) next.delete(key);
+      else next.add(key);
       return next;
     });
-
-    // Keep the plan bundle in sync with the quick pick
-    setPlanBundle(preset === "both" ? "exterior+interior" : "exterior");
   }, []);
 
   const buildQuoteSnapshot = useCallback((): QuoteRecord | null => {
@@ -437,7 +413,7 @@ export default function Home() {
       alreadyOut: alreadyOutPrice,
       services: Array.from(selectedServices),
       planType: servicePlan,
-      planBundle,
+      planBundle: PLAN_BUNDLE_ACTIVE,
       planPerVisit: servicePlan === "none" ? null : planEstimate.total,
       planAnnualValue: servicePlan === "none" ? null : planEstimate.annualValue,
       status: "quoted",
@@ -450,7 +426,6 @@ export default function Home() {
     frenchEquivalent,
     frenchPaneCount,
     paneCount,
-    planBundle,
     planEstimate.annualValue,
     planEstimate.total,
     selectedServices,
@@ -583,7 +558,7 @@ export default function Home() {
     if (appMode === "windows" && servicePlan !== "none") {
       lines.push("");
       lines.push("Recurring plan (bundle only):");
-      lines.push(`Plan: ${planLabel} (${planBundle === "exterior" ? "Exterior" : "Exterior + Interior"})`);
+      lines.push(`Plan: ${planLabel} (Exterior)`);
       if (planEstimate.planDiscount > 0) {
         lines.push(`Discount: −${formatCurrency(planEstimate.planDiscount)} / visit`);
       }
@@ -665,7 +640,7 @@ export default function Home() {
               <p className="text-xs text-white/70 font-medium leading-none">
                 {calledOutPrice > 0
                   ? appMode === "windows" && servicePlan !== "none"
-                    ? `${SERVICE_PLAN_LABELS[servicePlan]} (${planBundle === "exterior" ? "Exterior" : "Ext + Int"})`
+                    ? `${SERVICE_PLAN_LABELS[servicePlan]} (Exterior)`
                     : "Called Out"
                   : "No quote yet"}
               </p>
@@ -875,79 +850,32 @@ export default function Home() {
               <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
                 <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>2</span>
                 <div>
-                  <h2 className="font-bold text-foreground font-display">Select Services</h2>
-                  <p className="text-xs text-muted-foreground mt-0.5">Start with exterior / interior — screens & tracks are add-ons below.</p>
+                  <h2 className="font-bold text-foreground font-display">Services</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Exterior window cleaning is included — add screens & tracks below if needed.</p>
                 </div>
               </div>
 
-              {/* Quick presets for faster quoting */}
-              <div className="px-4 pt-4">
-                <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide font-display mb-2">
-                  Quick Pick
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => applyBasePreset("outside")}
-                    className={`h-11 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
-                      selectedServices.has("exterior") && !selectedServices.has("interior")
-                        ? "border-primary bg-accent text-primary"
-                        : "border-border bg-secondary text-foreground hover:bg-border"
-                    }`}
-                  >
-                    Exterior
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyBasePreset("both")}
-                    className={`h-11 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
-                      selectedServices.has("exterior") && selectedServices.has("interior")
-                        ? "border-primary bg-accent text-primary"
-                        : "border-border bg-secondary text-foreground hover:bg-border"
-                    }`}
-                  >
-                    Ext + Int
-                  </button>
+              <div className="p-4">
+                <div className="rounded-2xl border-2 border-primary/25 bg-accent/40 px-4 py-4 flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-primary text-primary-foreground flex items-center justify-center flex-shrink-0">
+                    <HomeIcon size={22} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-extrabold text-foreground font-display">Exterior window cleaning</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Outside glass — always included in your quote</p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    {tier && !oneTimeEstimate.isCustom ? (
+                      <p className="text-lg font-extrabold text-primary font-display">{formatCurrency(tier.exterior)}</p>
+                    ) : oneTimeEstimate.isCustom && totalPanes > 0 ? (
+                      <p className="text-lg font-extrabold text-primary font-display">
+                        {formatCurrency(totalPanes * CUSTOM_PRICE_PER_PANE)}
+                      </p>
+                    ) : (
+                      <p className="text-sm font-semibold text-muted-foreground">—</p>
+                    )}
+                  </div>
                 </div>
-              </div>
-
-              <div className="p-4 grid grid-cols-2 gap-3">
-                {BASE_SERVICE_CONFIG.map((svc) => {
-                  const isSelected = selectedServices.has(svc.key);
-                  const price = tier ? (tier[svc.key as keyof typeof tier] as number) : null;
-                  const isUnavailable =
-                    tier !== null &&
-                    svc.key !== "exterior" &&
-                    (tier[svc.key as keyof typeof tier] as number) === 0;
-
-                  return (
-                    <button
-                      key={svc.key}
-                      onClick={() => !isUnavailable && toggleService(svc.key)}
-                      disabled={isUnavailable}
-                      className={`service-card relative rounded-2xl border-2 p-4 text-left transition-all duration-200 active:scale-[0.97] ${
-                        isSelected && !isUnavailable
-                          ? "border-primary bg-accent"
-                          : isUnavailable
-                          ? "border-border bg-secondary/50 opacity-50 cursor-not-allowed"
-                          : "border-border bg-white hover:border-primary/40 hover:bg-accent/30"
-                      }`}
-                    >
-                      <div className={`mb-2 ${isSelected ? "text-primary" : svc.color}`}>{svc.icon}</div>
-                      <p className={`font-bold text-sm font-display ${isSelected ? "text-primary" : "text-foreground"}`}>{svc.label}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{svc.description}</p>
-                      {price !== null && price > 0 && !isUnavailable && (
-                        <p className={`text-sm font-bold mt-2 font-display ${isSelected ? "text-primary" : "text-muted-foreground"}`}>
-                          {formatCurrency(price)}
-                        </p>
-                      )}
-                      {isUnavailable && <p className="text-xs text-muted-foreground mt-2">Custom quote</p>}
-                      {isSelected && !isUnavailable && (
-                        <div className="absolute top-2 right-2 text-primary"><CheckCircle2 size={16} /></div>
-                      )}
-                    </button>
-                  );
-                })}
               </div>
             </div>
 
@@ -1077,31 +1005,8 @@ export default function Home() {
           </div>
 
           <div className="px-4 pt-4">
-            <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide font-display mb-2">
-              Plan applies to
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setPlanBundle("exterior")}
-                className={`h-10 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
-                  planBundle === "exterior" ? "border-primary bg-accent text-primary" : "border-border bg-secondary text-foreground hover:bg-border"
-                }`}
-              >
-                Exterior
-              </button>
-              <button
-                type="button"
-                onClick={() => setPlanBundle("exterior+interior")}
-                className={`h-10 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
-                  planBundle === "exterior+interior" ? "border-primary bg-accent text-primary" : "border-border bg-secondary text-foreground hover:bg-border"
-                }`}
-              >
-                Ext + Int
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Plan pricing is based on the recurring bundle only. Screens/tracks are quoted separately as needed.
+            <p className="text-xs text-muted-foreground">
+              Recurring plans are priced for <strong>exterior</strong> visits only. Screens and tracks stay separate add-ons.
             </p>
           </div>
 
@@ -1214,7 +1119,7 @@ export default function Home() {
                 <div className="rounded-xl bg-primary px-4 py-4 flex items-center justify-between mb-3">
                   <div>
                     <p className="text-primary-foreground/80 text-xs font-medium">
-                      {SERVICE_PLAN_LABELS[servicePlan]} ({planBundle === "exterior" ? "Exterior" : "Ext + Int"})
+                      {SERVICE_PLAN_LABELS[servicePlan]} (Exterior)
                     </p>
                     <p className="text-4xl font-bold text-primary-foreground leading-tight font-display">
                       {formatCurrency(planEstimate.total)}
