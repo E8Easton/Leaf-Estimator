@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <circle cx="16" cy="16" r="16" fill="#0f1b33"/>
+  <!-- Falcon / wing silhouette -->
+  <path d="M16 6.5 26 24H6L16 6.5Z" fill="#e2e8f0"/>
+  <path d="M16 9 22.5 22H9.5L16 9Z" fill="#94a3b8"/>
+  <!-- Leaf mark -->
+  <path
+    d="M22 20.5c0-4-3.2-6.8-7-6.5 1.8 1.2 2.8 3.4 2.6 5.8.6-.2 1.2-.5 1.7-.9.9.4 1.9.6 2.7.6z"
+    fill="#10b981"
+  />
+  <path d="M15.2 14.5c2.8 1 4.5 3.5 4.3 6.2" stroke="#6ee7b7" stroke-width="0.9" fill="none" stroke-linecap="round"/>
+</svg>

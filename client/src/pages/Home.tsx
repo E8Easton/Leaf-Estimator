@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useSupabaseSession } from "@/contexts/SupabaseSessionProvider";
 import {
   clampNonNegInt,
@@ -788,7 +789,7 @@ export default function Home() {
       >
         <div className="max-w-[480px] mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <img src="/logo.png" alt="Leaf Cleaning" className="w-9 h-9 rounded-full object-cover bg-white" />
+            <BrandLogo />
             <div>
               <p className="text-xs text-white/70 font-medium leading-none">Leaf Cleaning</p>
               <p className="text-sm font-bold text-white leading-tight font-display">Estimator</p>
