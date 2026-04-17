@@ -41,6 +41,43 @@ import {
   Check,
 } from "lucide-react";
 
+type SalesTrackerStats = {
+  quotes: number;
+  sales: number;
+  upsells: number;
+};
+
+const SALES_TRACKER_STORAGE_KEY = "leaf:salesTracker:v1";
+
+function clampNonNegInt(n: unknown): number {
+  const num = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.floor(num));
+}
+
+function safeReadSalesStats(): SalesTrackerStats {
+  try {
+    const raw = localStorage.getItem(SALES_TRACKER_STORAGE_KEY);
+    if (!raw) return { quotes: 0, sales: 0, upsells: 0 };
+    const parsed = JSON.parse(raw) as Partial<SalesTrackerStats> | null;
+    return {
+      quotes: clampNonNegInt(parsed?.quotes),
+      sales: clampNonNegInt(parsed?.sales),
+      upsells: clampNonNegInt(parsed?.upsells),
+    };
+  } catch {
+    return { quotes: 0, sales: 0, upsells: 0 };
+  }
+}
+
+function safeWriteSalesStats(next: SalesTrackerStats) {
+  try {
+    localStorage.setItem(SALES_TRACKER_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore write failures (private mode / storage disabled)
+  }
+}
+
 // ── Mode config ──────────────────────────────────────────────────────────────
 
 type AppMode = "windows" | "christmas";
@@ -101,6 +138,12 @@ export default function Home() {
   const modeConfig = MODE_CONFIG.find((m) => m.key === appMode)!;
 
   const [copied, setCopied] = useState(false);
+  const [salesStats, setSalesStats] = useState<SalesTrackerStats>(() => ({
+    quotes: 0,
+    sales: 0,
+    upsells: 0,
+  }));
+  const [pendingQuoteToScore, setPendingQuoteToScore] = useState(false);
 
   // Window cleaning state
   const [paneCount, setPaneCount] = useState(0);
@@ -121,6 +164,10 @@ export default function Home() {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [totalPulse, setTotalPulse] = useState(false);
   const prevTotalRef = useRef(0);
+
+  useEffect(() => {
+    setSalesStats(safeReadSalesStats());
+  }, []);
 
   const isWindows = appMode === "windows";
 
@@ -279,6 +326,12 @@ export default function Home() {
     lines.push("www.dirtyleafcleaning.com");
 
     navigator.clipboard.writeText(lines.join("\n")).then(() => {
+      setSalesStats((prev) => {
+        const next = { ...prev, quotes: prev.quotes + 1 };
+        safeWriteSalesStats(next);
+        return next;
+      });
+      setPendingQuoteToScore(true);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -975,6 +1028,105 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {/* ══════════════════════════════════════════
+            SALES TRACKER
+        ══════════════════════════════════════════ */}
+        <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+          <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
+            <CheckCircle2 size={18} className="text-primary" />
+            <h2 className="font-bold text-foreground font-display">Sales Tracker</h2>
+            <button
+              type="button"
+              onClick={() => {
+                const next = { quotes: 0, sales: 0, upsells: 0 };
+                setSalesStats(next);
+                safeWriteSalesStats(next);
+                setPendingQuoteToScore(false);
+              }}
+              className="ml-auto text-xs font-semibold text-muted-foreground hover:text-foreground"
+            >
+              Reset
+            </button>
+          </div>
+
+          <div className="p-4 space-y-3">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-xl bg-secondary px-3 py-3 text-center">
+                <p className="text-[11px] text-muted-foreground font-semibold">Quotes</p>
+                <p className="text-2xl font-bold font-display text-foreground">{salesStats.quotes}</p>
+              </div>
+              <div className="rounded-xl bg-secondary px-3 py-3 text-center">
+                <p className="text-[11px] text-muted-foreground font-semibold">Sales</p>
+                <p className="text-2xl font-bold font-display text-foreground">{salesStats.sales}</p>
+              </div>
+              <div className="rounded-xl bg-secondary px-3 py-3 text-center">
+                <p className="text-[11px] text-muted-foreground font-semibold">Upsells</p>
+                <p className="text-2xl font-bold font-display text-foreground">{salesStats.upsells}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-xl border border-border bg-white px-3 py-3">
+                <p className="text-[11px] text-muted-foreground font-semibold">Close rate</p>
+                <p className="text-lg font-bold font-display text-foreground">
+                  {salesStats.quotes > 0 ? `${Math.round((salesStats.sales / salesStats.quotes) * 100)}%` : "—"}
+                </p>
+              </div>
+              <div className="rounded-xl border border-border bg-white px-3 py-3">
+                <p className="text-[11px] text-muted-foreground font-semibold">Upsell rate</p>
+                <p className="text-lg font-bold font-display text-foreground">
+                  {salesStats.sales > 0 ? `${Math.round((salesStats.upsells / salesStats.sales) * 100)}%` : "—"}
+                </p>
+              </div>
+            </div>
+
+            {pendingQuoteToScore && (
+              <div className="rounded-xl bg-accent px-3 py-3">
+                <p className="text-xs font-bold text-accent-foreground mb-2 font-display">
+                  Score the last quote
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSalesStats((prev) => {
+                        const next = { ...prev, sales: prev.sales + 1 };
+                        safeWriteSalesStats(next);
+                        return next;
+                      });
+                      setPendingQuoteToScore(false);
+                    }}
+                    className="h-11 rounded-xl bg-primary text-primary-foreground font-bold font-display active:scale-95 transition-all"
+                  >
+                    Sold
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSalesStats((prev) => {
+                        const next = { ...prev, sales: prev.sales + 1, upsells: prev.upsells + 1 };
+                        safeWriteSalesStats(next);
+                        return next;
+                      });
+                      setPendingQuoteToScore(false);
+                    }}
+                    className="h-11 rounded-xl border-2 border-primary bg-white text-primary font-bold font-display active:scale-95 transition-all"
+                  >
+                    Sold + Upsell
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPendingQuoteToScore(false)}
+                  className="mt-2 w-full text-xs font-semibold text-muted-foreground hover:text-foreground"
+                >
+                  Not sold / skip
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* Footer */}
         <p className="text-center text-xs text-muted-foreground pb-2">
