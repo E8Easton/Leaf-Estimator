@@ -274,28 +274,36 @@ export default function Home() {
     <div className="min-h-screen bg-background pb-10">
 
       {/* ── Sticky Header ── */}
-      <div className="sticky top-0 z-50 bg-white/95 backdrop-blur-sm border-b border-border shadow-sm">
+      <div
+        className="sticky top-0 z-50 border-b border-white/10 shadow-sm"
+        style={{
+          background: "rgba(15, 27, 51, 0.92)",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+          paddingTop: "env(safe-area-inset-top)",
+        }}
+      >
         <div className="max-w-[480px] mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <img src="/logo.png" alt="Leaf Cleaning" className="w-9 h-9 rounded-full object-cover" />
+            <img src="/logo.png" alt="Leaf Cleaning" className="w-9 h-9 rounded-full object-cover bg-white" />
             <div>
-              <p className="text-xs text-muted-foreground font-medium leading-none">Leaf Cleaning</p>
-              <p className="text-sm font-bold text-foreground leading-tight font-display">Estimator</p>
+              <p className="text-xs text-white/70 font-medium leading-none">Leaf Cleaning</p>
+              <p className="text-sm font-bold text-white leading-tight font-display">Estimator</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={reset}
-              className="h-9 px-3 rounded-xl border border-border flex items-center gap-2 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors text-sm font-semibold"
+              className="h-9 px-3 rounded-xl border border-white/15 flex items-center gap-2 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-semibold"
             >
               <RefreshCw size={14} />
               Reset
             </button>
             <div className={`text-right transition-all duration-200 ${totalPulse ? "total-pulse" : ""}`}>
-              <p className="text-xs text-muted-foreground font-medium leading-none">
+              <p className="text-xs text-white/70 font-medium leading-none">
                 {calledOutPrice > 0 ? (appMode === "windows" && servicePlan !== "none" ? SERVICE_PLAN_LABELS[servicePlan] : "Called Out") : "No quote yet"}
               </p>
-              <p className="text-2xl font-bold leading-tight text-primary font-display">
+              <p className="text-2xl font-bold leading-tight text-white font-display">
                 {calledOutPrice > 0 ? formatCurrency(appMode === "windows" && servicePlan !== "none" ? estimate.total : calledOutPrice) : "—"}
               </p>
             </div>
