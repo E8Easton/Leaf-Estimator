@@ -1,9 +1,12 @@
 // ============================================================
-// MiNT Window Cleaning — Pricing Engine
-// Based on Gatlin McBride's pricing system (pane-range model)
+// Leaf Cleaning — Master Pricing Engine
+// Based on Gatlin McBride's pricing system (5 videos)
 // Sources:
-//   https://www.youtube.com/watch?v=SpDOvluhPNQ
-//   https://www.youtube.com/watch?v=mDvNqrZPM0Q
+//   [1] https://www.youtube.com/watch?v=mDvNqrZPM0Q
+//   [2] https://www.youtube.com/watch?v=YMj1qQf7qBQ
+//   [3] https://www.youtube.com/watch?v=SpDOvluhPNQ
+//   [4] https://www.youtube.com/watch?v=fAJjxpqH-h4  ← French pane rule
+//   [5] https://www.youtube.com/watch?v=NeC265l3DWw
 // ============================================================
 
 export interface PaneTier {
@@ -14,9 +17,10 @@ export interface PaneTier {
   interior: number;
   screens: number;
   tracks: number;
-  screenSpecial: number | null; // $25 promo, null if not available
+  screenSpecial: number | null;
 }
 
+// Corrected prices from video [1] and [3]
 export const PANE_TIERS: PaneTier[] = [
   {
     label: "Up to 25 Panes",
@@ -32,7 +36,7 @@ export const PANE_TIERS: PaneTier[] = [
     label: "Up to 40 Panes",
     maxPanes: 40,
     sqftRange: "2,500 – 3,499 SqFt",
-    exterior: 315,
+    exterior: 345,
     interior: 160,
     screens: 80,
     tracks: 240,
@@ -73,32 +77,58 @@ export const PANE_TIERS: PaneTier[] = [
     maxPanes: 120,
     sqftRange: "8,000 – 9,999 SqFt",
     exterior: 895,
-    interior: 0, // custom
-    screens: 0, // custom
-    tracks: 0, // custom
+    interior: 0,
+    screens: 0,
+    tracks: 0,
     screenSpecial: null,
   },
 ];
 
-export const CUSTOM_PRICE_PER_PANE = 8; // $8/pane for 120+ pane homes
+export const CUSTOM_PRICE_PER_PANE = 8; // $8/pane for 121+ pane homes [3]
 
 export type ServiceKey = "exterior" | "interior" | "screens" | "tracks" | "screenSpecial";
 
-export type ServicePlanType = "none" | "quarterly" | "biannual";
+// Service plan discount structure from [2]
+export type ServicePlanType = "none" | "monthly" | "quarterly" | "biannual";
 
-export const SERVICE_PLAN_DISCOUNT = 100; // $100 off per service
+export const SERVICE_PLAN_DISCOUNT: Record<ServicePlanType, number> = {
+  none: 0,
+  biannual: 50,    // $50 off per visit [2]
+  quarterly: 100,  // $100 off per visit [2]
+  monthly: 150,    // $150 off per visit [2]
+};
 
 export const SERVICE_PLAN_LABELS: Record<ServicePlanType, string> = {
   none: "One-Time",
-  quarterly: "Quarterly Plan",
   biannual: "Biannual Plan",
+  quarterly: "Quarterly Plan",
+  monthly: "Monthly Plan",
 };
 
 export const SERVICE_PLAN_DESCRIPTIONS: Record<ServicePlanType, string> = {
   none: "Single visit, no commitment",
-  quarterly: "Every 3 months — $100 off each visit",
-  biannual: "Every 6 months — $100 off each visit",
+  biannual: "Every 6 months — save $50 each visit",
+  quarterly: "Every 3 months — save $100 each visit",
+  monthly: "Every month — save $150 each visit",
 };
+
+export const SERVICE_PLAN_VISITS: Record<ServicePlanType, number> = {
+  none: 1,
+  biannual: 2,
+  quarterly: 4,
+  monthly: 12,
+};
+
+// French pane multiplier — from video [4]
+// Count all small French/divided-light panes, then multiply by 0.4
+// to get the equivalent standard pane count for pricing
+export const FRENCH_PANE_MULTIPLIER = 0.4;
+
+export function frenchPanesToStandard(frenchPaneCount: number): number {
+  return Math.ceil(frenchPaneCount * FRENCH_PANE_MULTIPLIER);
+}
+
+export const MINIMUM_CHARGE = 125; // Absolute floor [1]
 
 export interface EstimateResult {
   tier: PaneTier | null;
@@ -112,18 +142,21 @@ export interface EstimateResult {
 
 export function getTierForPanes(paneCount: number): PaneTier | null {
   if (paneCount <= 0) return null;
-  // Find the lowest tier whose maxPanes >= paneCount
   const tier = PANE_TIERS.find((t) => paneCount <= t.maxPanes);
-  return tier ?? null; // null means 120+ panes (custom)
+  return tier ?? null;
 }
 
 export function calculateEstimate(
-  paneCount: number,
+  standardPanes: number,
+  frenchPanes: number,
   selectedServices: Set<ServiceKey>,
   servicePlan: ServicePlanType,
   useScreenSpecial: boolean
 ): EstimateResult {
-  if (paneCount <= 0) {
+  const frenchEquivalent = frenchPanesToStandard(frenchPanes);
+  const totalPanes = standardPanes + frenchEquivalent;
+
+  if (totalPanes <= 0) {
     return {
       tier: null,
       isCustom: false,
@@ -135,30 +168,29 @@ export function calculateEstimate(
     };
   }
 
-  const tier = getTierForPanes(paneCount);
+  const tier = getTierForPanes(totalPanes);
   const isCustom = tier === null;
   const breakdown: { label: string; price: number }[] = [];
   let subtotal = 0;
 
   if (isCustom) {
-    // Custom pricing: $8/pane for exterior
     if (selectedServices.has("exterior")) {
-      const price = paneCount * CUSTOM_PRICE_PER_PANE;
-      breakdown.push({ label: `Exterior (${paneCount} panes × $${CUSTOM_PRICE_PER_PANE})`, price });
+      const price = totalPanes * CUSTOM_PRICE_PER_PANE;
+      breakdown.push({ label: `Exterior (${totalPanes} panes × $${CUSTOM_PRICE_PER_PANE})`, price });
       subtotal += price;
     }
     if (selectedServices.has("interior")) {
-      const price = Math.round(paneCount * CUSTOM_PRICE_PER_PANE * 0.5);
-      breakdown.push({ label: `Interior (${paneCount} panes × $${CUSTOM_PRICE_PER_PANE * 0.5})`, price });
+      const price = Math.round(totalPanes * CUSTOM_PRICE_PER_PANE * 0.5);
+      breakdown.push({ label: `Interior (${totalPanes} panes × $${CUSTOM_PRICE_PER_PANE * 0.5})`, price });
       subtotal += price;
     }
     if (selectedServices.has("screens")) {
-      const price = Math.round(paneCount * 2.5);
+      const price = Math.round(totalPanes * 2.5);
       breakdown.push({ label: `Screen Cleaning (est.)`, price });
       subtotal += price;
     }
     if (selectedServices.has("tracks")) {
-      const price = Math.round(paneCount * 4);
+      const price = Math.round(totalPanes * 4);
       breakdown.push({ label: `Track Detailing (est.)`, price });
       subtotal += price;
     }
@@ -172,12 +204,14 @@ export function calculateEstimate(
       subtotal += tier!.interior;
     }
     if (selectedServices.has("screens")) {
-      const screenPrice = useScreenSpecial && tier!.screenSpecial !== null
-        ? tier!.screenSpecial
-        : tier!.screens;
-      const screenLabel = useScreenSpecial && tier!.screenSpecial !== null
-        ? "Screen Cleaning (SPECIAL)"
-        : "Screen Cleaning";
+      const screenPrice =
+        useScreenSpecial && tier!.screenSpecial !== null
+          ? tier!.screenSpecial
+          : tier!.screens;
+      const screenLabel =
+        useScreenSpecial && tier!.screenSpecial !== null
+          ? "Screen Cleaning (SPECIAL $25)"
+          : "Screen Cleaning";
       breakdown.push({ label: screenLabel, price: screenPrice });
       subtotal += screenPrice;
     }
@@ -187,14 +221,11 @@ export function calculateEstimate(
     }
   }
 
-  // Service plan discount
-  const planDiscount = servicePlan !== "none" ? SERVICE_PLAN_DISCOUNT : 0;
-  const total = Math.max(subtotal - planDiscount, 125); // $125 absolute floor
+  const planDiscount = SERVICE_PLAN_DISCOUNT[servicePlan];
+  const total = Math.max(subtotal - planDiscount, MINIMUM_CHARGE);
 
-  // Annual value calculation
-  let annualValue: number | null = null;
-  if (servicePlan === "quarterly") annualValue = total * 4;
-  if (servicePlan === "biannual") annualValue = total * 2;
+  const visits = SERVICE_PLAN_VISITS[servicePlan];
+  const annualValue = visits > 1 ? total * visits : null;
 
   return {
     tier: tier ?? null,
