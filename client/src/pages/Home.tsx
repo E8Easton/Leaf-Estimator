@@ -11,15 +11,12 @@ import {
   SERVICE_PLAN_DESCRIPTIONS,
   SERVICE_PLAN_PERKS,
   SERVICE_PLAN_DISCOUNTS,
-  CHRISTMAS_LIGHT_OPTIONS,
   FRENCH_PANE_MULTIPLIER,
   frenchPanesToStandard,
   calculateEstimate,
-  calculateChristmasEstimate,
   formatCurrency,
   type ServiceKey,
   type ServicePlanType,
-  type ChristmasLightType,
 } from "@/lib/pricing";
 import {
   Home as HomeIcon,
@@ -35,7 +32,6 @@ import {
   ClipboardList,
   Info,
   Sparkles,
-  Star,
   X,
   Copy,
   Check,
@@ -45,9 +41,12 @@ type SalesTrackerStats = {
   quotes: number;
   sales: number;
   upsells: number;
+  soldRevenueOneTime: number;
+  soldAnnualValue: number;
 };
 
 const SALES_TRACKER_STORAGE_KEY = "leaf:salesTracker:v1";
+const QUOTE_HISTORY_STORAGE_KEY = "leaf:quoteHistory:v1";
 
 function clampNonNegInt(n: unknown): number {
   const num = typeof n === "number" ? n : Number(n);
@@ -58,15 +57,17 @@ function clampNonNegInt(n: unknown): number {
 function safeReadSalesStats(): SalesTrackerStats {
   try {
     const raw = localStorage.getItem(SALES_TRACKER_STORAGE_KEY);
-    if (!raw) return { quotes: 0, sales: 0, upsells: 0 };
+    if (!raw) return { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
     const parsed = JSON.parse(raw) as Partial<SalesTrackerStats> | null;
     return {
       quotes: clampNonNegInt(parsed?.quotes),
       sales: clampNonNegInt(parsed?.sales),
       upsells: clampNonNegInt(parsed?.upsells),
+      soldRevenueOneTime: Number.isFinite(Number(parsed?.soldRevenueOneTime)) ? Number(parsed?.soldRevenueOneTime) : 0,
+      soldAnnualValue: Number.isFinite(Number(parsed?.soldAnnualValue)) ? Number(parsed?.soldAnnualValue) : 0,
     };
   } catch {
-    return { quotes: 0, sales: 0, upsells: 0 };
+    return { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
   }
 }
 
@@ -80,19 +81,11 @@ function safeWriteSalesStats(next: SalesTrackerStats) {
 
 // ── Mode config ──────────────────────────────────────────────────────────────
 
-type AppMode = "windows" | "christmas";
+type AppMode = "windows";
 
-const MODE_CONFIG: {
-  key: AppMode;
-  label: string;
-  icon: React.ReactNode;
-  activeClass: string;
-  stepColor: string;
-  btnColor: string;
-  ringColor: string;
-}[] = [
+const MODE_CONFIG = [
   {
-    key: "windows",
+    key: "windows" as const,
     label: "Windows",
     icon: <Layers size={18} />,
     activeClass: "border-primary bg-accent text-primary",
@@ -100,16 +93,46 @@ const MODE_CONFIG: {
     btnColor: "bg-primary text-primary-foreground hover:bg-primary/90",
     ringColor: "focus:ring-primary",
   },
-  {
-    key: "christmas",
-    label: "Xmas Lights",
-    icon: <Star size={18} />,
-    activeClass: "border-red-500 bg-red-50 text-red-700",
-    stepColor: "bg-red-500 text-white",
-    btnColor: "bg-red-500 text-white hover:bg-red-600",
-    ringColor: "focus:ring-red-400",
-  },
 ];
+
+type QuoteStatus = "quoted" | "sold" | "sold_upsell" | "lost";
+
+type QuoteRecord = {
+  id: string;
+  createdAt: number;
+  panes: number;
+  frenchPanes: number;
+  frenchEquivalent: number;
+  totalPanesForTier: number;
+  tierLabel: string;
+  oneTimeSubtotal: number;
+  alreadyOut: number;
+  services: ServiceKey[];
+  planType: ServicePlanType;
+  planBundle: "exterior" | "exterior+interior";
+  planPerVisit: number | null;
+  planAnnualValue: number | null;
+  status: QuoteStatus;
+};
+
+function safeReadQuoteHistory(): QuoteRecord[] {
+  try {
+    const raw = localStorage.getItem(QUOTE_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as QuoteRecord[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeWriteQuoteHistory(next: QuoteRecord[]) {
+  try {
+    localStorage.setItem(QUOTE_HISTORY_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
 
 const SERVICE_CONFIG: {
   key: ServiceKey;
@@ -142,8 +165,11 @@ export default function Home() {
     quotes: 0,
     sales: 0,
     upsells: 0,
+    soldRevenueOneTime: 0,
+    soldAnnualValue: 0,
   }));
-  const [pendingQuoteToScore, setPendingQuoteToScore] = useState(false);
+  const [quoteHistory, setQuoteHistory] = useState<QuoteRecord[]>([]);
+  const [activeQuoteId, setActiveQuoteId] = useState<string | null>(null);
 
   // Window cleaning state
   const [paneCount, setPaneCount] = useState(0);
@@ -154,11 +180,6 @@ export default function Home() {
   const [planBundle, setPlanBundle] = useState<"exterior" | "exterior+interior">("exterior");
   const [showInfo, setShowInfo] = useState(false);
 
-  // Christmas lights state
-  const [linearFeet, setLinearFeet] = useState(0);
-  const [lightType, setLightType] = useState<ChristmasLightType>("classic");
-  const [addGoveePanel, setAddGoveePanel] = useState(false);
-
   // Shared state
   const [servicePlan, setServicePlan] = useState<ServicePlanType>("none");
   const [showBreakdown, setShowBreakdown] = useState(false);
@@ -167,17 +188,15 @@ export default function Home() {
 
   useEffect(() => {
     setSalesStats(safeReadSalesStats());
+    setQuoteHistory(safeReadQuoteHistory());
   }, []);
 
-  const isWindows = appMode === "windows";
+  const isWindows = true;
 
   // 1) One-time visit quote (includes any selected add-ons; no plan discount)
-  const oneTimeEstimate =
-    appMode === "windows"
-      ? calculateEstimate(paneCount, frenchPaneCount, selectedServices, "none", useScreenSpecial, {
-          onSiteScreenUpsell: useOnSiteScreenUpsell,
-        })
-      : calculateChristmasEstimate(linearFeet, lightType, addGoveePanel, "none");
+  const oneTimeEstimate = calculateEstimate(paneCount, frenchPaneCount, selectedServices, "none", useScreenSpecial, {
+    onSiteScreenUpsell: useOnSiteScreenUpsell,
+  });
 
   // 2) Recurring plan quote (bundle only; screens/tracks excluded by default)
   const planBundleServices = useCallback(() => {
@@ -188,10 +207,7 @@ export default function Home() {
     return s;
   }, [isWindows, planBundle]);
 
-  const planEstimate =
-    appMode === "windows"
-      ? calculateEstimate(paneCount, frenchPaneCount, planBundleServices(), servicePlan, false)
-      : calculateChristmasEstimate(linearFeet, lightType, addGoveePanel, "none");
+  const planEstimate = calculateEstimate(paneCount, frenchPaneCount, planBundleServices(), servicePlan, false);
 
   // One-time price points (no plan discount)
   const calledOutPrice = oneTimeEstimate.subtotal;
@@ -216,11 +232,7 @@ export default function Home() {
     }
   }, [appMode, calledOutPrice, planEstimate.total, servicePlan]);
 
-  const handleModeChange = (mode: AppMode) => {
-    setAppMode(mode);
-    setShowBreakdown(false);
-    setShowInfo(false);
-  };
+  // Single-mode app (Windows). Keep this for future expansion.
 
   const reset = () => {
     setPaneCount(0);
@@ -229,9 +241,6 @@ export default function Home() {
     setUseScreenSpecial(false);
     setUseOnSiteScreenUpsell(false);
     setPlanBundle("exterior");
-    setLinearFeet(0);
-    setLightType("classic");
-    setAddGoveePanel(false);
     setServicePlan("none");
     setShowBreakdown(false);
   };
@@ -278,6 +287,90 @@ export default function Home() {
     // Keep the plan bundle in sync with the quick pick
     setPlanBundle(preset === "both" ? "exterior+interior" : "exterior");
   }, []);
+
+  const buildQuoteSnapshot = useCallback((): QuoteRecord | null => {
+    if (calledOutPrice <= 0) return null;
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const tierLabel = oneTimeEstimate.tier?.label ?? "Custom";
+    return {
+      id,
+      createdAt: Date.now(),
+      panes: paneCount,
+      frenchPanes: frenchPaneCount,
+      frenchEquivalent,
+      totalPanesForTier: totalPanes,
+      tierLabel,
+      oneTimeSubtotal: calledOutPrice,
+      alreadyOut: alreadyOutPrice,
+      services: Array.from(selectedServices),
+      planType: servicePlan,
+      planBundle,
+      planPerVisit: servicePlan === "none" ? null : planEstimate.total,
+      planAnnualValue: servicePlan === "none" ? null : planEstimate.annualValue,
+      status: "quoted",
+    };
+  }, [
+    alreadyOutPrice,
+    calledOutPrice,
+    frenchEquivalent,
+    frenchPaneCount,
+    paneCount,
+    planBundle,
+    planEstimate.annualValue,
+    planEstimate.total,
+    selectedServices,
+    servicePlan,
+    totalPanes,
+    oneTimeEstimate.tier,
+  ]);
+
+  const logQuote = useCallback(() => {
+    const snap = buildQuoteSnapshot();
+    if (!snap) return;
+    setQuoteHistory((prev) => {
+      const next = [snap, ...prev].slice(0, 200);
+      safeWriteQuoteHistory(next);
+      return next;
+    });
+    setActiveQuoteId(snap.id);
+    setSalesStats((prev) => {
+      const next = { ...prev, quotes: prev.quotes + 1 };
+      safeWriteSalesStats(next);
+      return next;
+    });
+  }, [buildQuoteSnapshot]);
+
+  const markSale = useCallback((opts: { upsell: boolean }) => {
+    const id = activeQuoteId ?? quoteHistory[0]?.id ?? null;
+    if (!id) return;
+    const q = quoteHistory.find((x) => x.id === id);
+    if (!q) return;
+
+    const soldOneTime = q.planType === "none" ? q.oneTimeSubtotal : 0;
+    const soldAnnual = q.planType !== "none" ? (q.planAnnualValue ?? 0) : 0;
+
+    setQuoteHistory((prev) => {
+      const next = prev.map((x) =>
+        x.id === id
+          ? { ...x, status: (opts.upsell ? "sold_upsell" : "sold") as QuoteStatus }
+          : x
+      );
+      safeWriteQuoteHistory(next);
+      return next;
+    });
+
+    setSalesStats((prev) => {
+      const next = {
+        ...prev,
+        sales: prev.sales + 1,
+        upsells: prev.upsells + (opts.upsell ? 1 : 0),
+        soldRevenueOneTime: prev.soldRevenueOneTime + soldOneTime,
+        soldAnnualValue: prev.soldAnnualValue + soldAnnual,
+      };
+      safeWriteSalesStats(next);
+      return next;
+    });
+  }, [activeQuoteId, quoteHistory]);
 
   const handleCopyQuote = () => {
     const modeLabel = MODE_CONFIG.find((m) => m.key === appMode)?.label ?? appMode;
@@ -326,12 +419,6 @@ export default function Home() {
     lines.push("www.dirtyleafcleaning.com");
 
     navigator.clipboard.writeText(lines.join("\n")).then(() => {
-      setSalesStats((prev) => {
-        const next = { ...prev, quotes: prev.quotes + 1 };
-        safeWriteSalesStats(next);
-        return next;
-      });
-      setPendingQuoteToScore(true);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -342,10 +429,6 @@ export default function Home() {
   const decrement = () => setPaneCount((c) => Math.max(c - 1, 0));
   const incrementBy = (n: number) => setPaneCount((c) => Math.min(c + n, 200));
   const decrementBy = (n: number) => setPaneCount((c) => Math.max(c - n, 0));
-
-  // Christmas linear-feet helpers
-  const incFt = (n: number) => setLinearFeet((c) => Math.min(c + n, 2000));
-  const decFt = (n: number) => setLinearFeet((c) => Math.max(c - n, 0));
 
   return (
     <div className="min-h-screen bg-background pb-10">
@@ -369,6 +452,13 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={reset}
+              className="h-9 px-3 rounded-xl border border-white/15 flex items-center gap-2 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-semibold"
+            >
+              Next
+            </button>
             <button
               onClick={reset}
               className="h-9 px-3 rounded-xl border border-white/15 flex items-center gap-2 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-semibold"
@@ -396,28 +486,7 @@ export default function Home() {
 
       <div className="max-w-[480px] mx-auto px-4 pt-5 space-y-4">
 
-        {/* ── Mode Selector ── */}
-        <div className="bg-white rounded-2xl border border-border shadow-sm p-3">
-          <div className="grid grid-cols-2 gap-2">
-            {MODE_CONFIG.map((m) => {
-              const isActive = appMode === m.key;
-              return (
-                <button
-                  key={m.key}
-                  onClick={() => handleModeChange(m.key)}
-                  className={`rounded-xl py-2.5 px-2 flex flex-col items-center gap-1.5 border-2 transition-all duration-150 active:scale-95 ${
-                    isActive
-                      ? m.activeClass
-                      : "border-transparent bg-secondary text-muted-foreground hover:bg-border"
-                  }`}
-                >
-                  {m.icon}
-                  <span className="text-[11px] font-bold leading-none font-display text-center">{m.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        {/* Single mode: Windows */}
 
         {/* ══════════════════════════════════════════
             WINDOW CLEANING MODE
@@ -486,14 +555,16 @@ export default function Home() {
                 </div>
 
                 {/* French panes add-on counter */}
-                <div className="mt-4 rounded-xl border border-border bg-secondary/50 p-3">
-                  <div className="flex items-center justify-between mb-2">
+                <div className="mt-4 rounded-2xl border-2 border-primary/20 bg-accent/40 p-4">
+                  <div className="flex items-start justify-between gap-3 mb-3">
                     <div>
-                      <p className="text-xs font-bold text-foreground font-display">French Panes</p>
-                      <p className="text-[11px] text-muted-foreground">Divided-light / grille windows — counted at ×{FRENCH_PANE_MULTIPLIER}</p>
+                      <p className="text-sm font-extrabold text-foreground font-display">French Panes</p>
+                      <p className="text-xs text-muted-foreground">
+                        Count small panes, we convert using <strong>×{FRENCH_PANE_MULTIPLIER}</strong> (rounded up).
+                      </p>
                     </div>
                     {frenchPaneCount > 0 && (
-                      <span className="text-xs font-bold text-primary bg-accent px-2 py-0.5 rounded-full font-display">
+                      <span className="text-xs font-bold text-primary bg-white/70 border border-primary/20 px-2.5 py-1 rounded-full font-display">
                         +{frenchPaneCount}
                       </span>
                     )}
@@ -501,9 +572,9 @@ export default function Home() {
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setFrenchPaneCount((c) => Math.max(c - 1, 0))}
-                      className="w-9 h-9 rounded-xl bg-secondary border border-border flex items-center justify-center text-foreground hover:bg-border active:scale-95 transition-all"
+                      className="w-12 h-12 rounded-2xl bg-white border border-border flex items-center justify-center text-foreground hover:bg-secondary active:scale-95 transition-all"
                     >
-                      <Minus size={16} />
+                      <Minus size={18} />
                     </button>
                     <input
                       type="number"
@@ -516,19 +587,36 @@ export default function Home() {
                         if (!isNaN(v)) setFrenchPaneCount(Math.min(Math.max(v, 0), 200));
                         else if (e.target.value === "") setFrenchPaneCount(0);
                       }}
-                      className="flex-1 h-9 rounded-xl border border-border bg-white px-3 text-center text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary font-display"
+                      className="flex-1 h-12 rounded-2xl border border-border bg-white px-3 text-center text-lg font-extrabold text-foreground focus:outline-none focus:ring-2 focus:ring-primary font-display"
                     />
                     <button
                       onClick={() => setFrenchPaneCount((c) => Math.min(c + 1, 200))}
-                      className="w-9 h-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 active:scale-95 transition-all"
+                      className="w-12 h-12 rounded-2xl bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 active:scale-95 transition-all"
                     >
-                      <Plus size={16} />
+                      <Plus size={18} />
                     </button>
                   </div>
+
+                  <div className="grid grid-cols-4 gap-2 mt-3">
+                    {[10, 20, 30, 40].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setFrenchPaneCount((c) => Math.min(c + n, 200))}
+                        className="h-10 rounded-xl text-sm font-bold border border-border bg-white hover:bg-secondary active:scale-95 transition-all font-display"
+                      >
+                        +{n}
+                      </button>
+                    ))}
+                  </div>
                   {frenchPaneCount > 0 && (
-                    <p className="text-xs text-primary font-semibold mt-2 text-center font-display">
-                      Total: {totalPanes} panes ({paneCount} standard + {frenchEquivalent} French equiv.)
-                    </p>
+                    <div className="mt-3 rounded-xl bg-white/70 border border-primary/15 px-3 py-2 text-center">
+                      <p className="text-[11px] text-muted-foreground font-semibold">French equiv.</p>
+                      <p className="text-lg font-extrabold text-primary font-display">{frenchEquivalent} panes</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Total panes for tier: <strong>{totalPanes}</strong>
+                      </p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -706,113 +794,7 @@ export default function Home() {
         {/* ══════════════════════════════════════════
             CHRISTMAS LIGHTS MODE
         ══════════════════════════════════════════ */}
-        {appMode === "christmas" && (
-          <>
-            {/* Step 1: Linear Feet */}
-            <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
-              <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
-                <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>1</span>
-                <h2 className="font-bold text-foreground font-display">Linear Feet</h2>
-              </div>
-              <div className="px-4 py-5">
-                <div className="flex items-center justify-between gap-4 mb-4">
-                  <button onClick={() => decFt(1)} className="pane-btn bg-secondary text-foreground hover:bg-border">
-                    <Minus size={22} />
-                  </button>
-                  <div className="flex-1 text-center">
-                    <p className="text-6xl font-bold text-foreground leading-none font-display">{linearFeet}</p>
-                    <p className="text-sm text-muted-foreground mt-1 font-medium">linear feet</p>
-                  </div>
-                  <button onClick={() => incFt(1)} className={`pane-btn ${modeConfig.btnColor}`}>
-                    <Plus size={22} />
-                  </button>
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {[-25, -10, +10, +25].map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => n > 0 ? incFt(n) : decFt(Math.abs(n))}
-                      className="py-2 rounded-xl text-sm font-semibold border border-border bg-secondary text-secondary-foreground hover:bg-border transition-colors active:scale-95"
-                    >
-                      {n > 0 ? `+${n}` : `${n}`}
-                    </button>
-                  ))}
-                </div>
-                <div className="mt-3">
-                  <input
-                    type="number"
-                    min={0}
-                    max={2000}
-                    value={linearFeet === 0 ? "" : linearFeet}
-                    placeholder="Or type feet"
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value);
-                      if (!isNaN(v)) setLinearFeet(Math.min(Math.max(v, 0), 2000));
-                      else if (e.target.value === "") setLinearFeet(0);
-                    }}
-                    className={`w-full h-11 rounded-xl border border-border bg-secondary px-3 text-center text-lg font-bold text-foreground focus:outline-none focus:ring-2 font-display ${modeConfig.ringColor}`}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Step 2: Light Type */}
-            <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
-              <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
-                <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>2</span>
-                <h2 className="font-bold text-foreground font-display">Light Type</h2>
-              </div>
-              <div className="p-4 space-y-2">
-                {CHRISTMAS_LIGHT_OPTIONS.map((opt) => {
-                  const isSelected = lightType === opt.key;
-                  return (
-                    <button
-                      key={opt.key}
-                      onClick={() => setLightType(opt.key)}
-                      className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between transition-all duration-200 active:scale-[0.98] ${
-                        isSelected ? "border-red-400 bg-red-50" : "border-border bg-white hover:border-red-300"
-                      }`}
-                    >
-                      <div className="text-left flex-1">
-                        <p className={`font-bold text-sm font-display ${isSelected ? "text-red-700" : "text-foreground"}`}>{opt.label}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{opt.description}</p>
-                      </div>
-                      <div className="text-right ml-3 flex-shrink-0">
-                        <p className={`font-bold text-base font-display ${isSelected ? "text-red-700" : "text-muted-foreground"}`}>${opt.totalPerFt}/ft</p>
-                        <p className="text-[10px] text-muted-foreground">labor ${opt.laborPerFt} + mat ${opt.materialsPerFt}</p>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {lightType === "smart" && (
-                <div className="px-4 pb-4">
-                  <button
-                    onClick={() => setAddGoveePanel(!addGoveePanel)}
-                    className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between transition-all duration-200 ${
-                      addGoveePanel ? "border-amber-400 bg-amber-50" : "border-border bg-secondary"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Sparkles size={16} className={addGoveePanel ? "text-amber-500" : "text-muted-foreground"} />
-                      <div className="text-left">
-                        <p className={`text-sm font-bold ${addGoveePanel ? "text-amber-700" : "text-foreground"}`}>GOVEE SMART Control Panel</p>
-                        <p className="text-xs text-muted-foreground">App control hub — sold separately</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-sm font-bold font-display ${addGoveePanel ? "text-amber-700" : "text-muted-foreground"}`}>$599</span>
-                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${addGoveePanel ? "border-amber-400 bg-amber-400" : "border-border"}`}>
-                        {addGoveePanel && <div className="w-2 h-2 rounded-full bg-white" />}
-                      </div>
-                    </div>
-                  </button>
-                </div>
-              )}
-            </div>
-          </>
-        )}
+        {/* Christmas lights removed for now */}
 
         {/* ══════════════════════════════════════════
             SERVICE PLAN (Windows only)
@@ -1039,10 +1021,9 @@ export default function Home() {
             <button
               type="button"
               onClick={() => {
-                const next = { quotes: 0, sales: 0, upsells: 0 };
+                const next = { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
                 setSalesStats(next);
                 safeWriteSalesStats(next);
-                setPendingQuoteToScore(false);
               }}
               className="ml-auto text-xs font-semibold text-muted-foreground hover:text-foreground"
             >
@@ -1081,49 +1062,115 @@ export default function Home() {
               </div>
             </div>
 
-            {pendingQuoteToScore && (
-              <div className="rounded-xl bg-accent px-3 py-3">
-                <p className="text-xs font-bold text-accent-foreground mb-2 font-display">
-                  Score the last quote
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSalesStats((prev) => {
-                        const next = { ...prev, sales: prev.sales + 1 };
-                        safeWriteSalesStats(next);
-                        return next;
-                      });
-                      setPendingQuoteToScore(false);
-                    }}
-                    className="h-11 rounded-xl bg-primary text-primary-foreground font-bold font-display active:scale-95 transition-all"
-                  >
-                    Sold
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSalesStats((prev) => {
-                        const next = { ...prev, sales: prev.sales + 1, upsells: prev.upsells + 1 };
-                        safeWriteSalesStats(next);
-                        return next;
-                      });
-                      setPendingQuoteToScore(false);
-                    }}
-                    className="h-11 rounded-xl border-2 border-primary bg-white text-primary font-bold font-display active:scale-95 transition-all"
-                  >
-                    Sold + Upsell
-                  </button>
-                </div>
+            <div className="rounded-xl bg-accent px-3 py-3">
+              <p className="text-xs font-bold text-accent-foreground mb-2 font-display">
+                Today’s actions
+              </p>
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => setPendingQuoteToScore(false)}
-                  className="mt-2 w-full text-xs font-semibold text-muted-foreground hover:text-foreground"
+                  onClick={logQuote}
+                  className="h-11 rounded-xl bg-primary text-primary-foreground font-bold font-display active:scale-95 transition-all"
                 >
-                  Not sold / skip
+                  Log Quote
+                </button>
+                <button
+                  type="button"
+                  onClick={() => markSale({ upsell: false })}
+                  className="h-11 rounded-xl border-2 border-primary bg-white text-primary font-bold font-display active:scale-95 transition-all"
+                >
+                  Mark Sale
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => markSale({ upsell: true })}
+                className="mt-2 w-full h-11 rounded-xl bg-foreground text-white font-bold font-display active:scale-95 transition-all"
+              >
+                Mark Sale + Upsell
+              </button>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Tip: tap a saved quote below to make it “active”, then mark it sold.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-xl border border-border bg-white px-3 py-3">
+                <p className="text-[11px] text-muted-foreground font-semibold">Sold (one-time)</p>
+                <p className="text-lg font-bold font-display text-foreground">
+                  {formatCurrency(salesStats.soldRevenueOneTime)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-border bg-white px-3 py-3">
+                <p className="text-[11px] text-muted-foreground font-semibold">Sold (annual value)</p>
+                <p className="text-lg font-bold font-display text-foreground">
+                  {formatCurrency(salesStats.soldAnnualValue)}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Quote History ── */}
+        <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+          <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
+            <ClipboardList size={18} className="text-primary" />
+            <h2 className="font-bold text-foreground font-display">Quote History</h2>
+            <button
+              type="button"
+              onClick={() => {
+                setQuoteHistory([]);
+                safeWriteQuoteHistory([]);
+                setActiveQuoteId(null);
+              }}
+              className="ml-auto text-xs font-semibold text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="p-4 space-y-2">
+            {quoteHistory.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No saved quotes yet. Tap “Log Quote” to save one.</p>
+            ) : (
+              quoteHistory.slice(0, 15).map((q) => {
+                const isActive = q.id === activeQuoteId;
+                const time = new Date(q.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                const primary = q.planType === "none" ? formatCurrency(q.oneTimeSubtotal) : `${formatCurrency(q.planPerVisit ?? 0)}/visit`;
+                const secondary = q.planType === "none" ? "One-time" : `${SERVICE_PLAN_LABELS[q.planType]} (${q.planBundle === "exterior" ? "Exterior" : "Ext + Int"})`;
+                const status =
+                  q.status === "sold_upsell" ? "Sold + Upsell" : q.status === "sold" ? "Sold" : "Quoted";
+                return (
+                  <button
+                    key={q.id}
+                    type="button"
+                    onClick={() => setActiveQuoteId(q.id)}
+                    className={`w-full rounded-xl border-2 px-3 py-3 text-left transition-all active:scale-[0.99] ${
+                      isActive ? "border-primary bg-accent" : "border-border bg-white hover:bg-secondary"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className={`text-sm font-bold font-display ${isActive ? "text-primary" : "text-foreground"}`}>
+                          {q.totalPanesForTier} panes · {q.tierLabel}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {time} · {secondary} · {status}
+                        </p>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className={`text-sm font-extrabold font-display ${isActive ? "text-primary" : "text-foreground"}`}>
+                          {primary}
+                        </p>
+                        {q.planType !== "none" && q.planAnnualValue !== null && (
+                          <p className="text-[11px] text-muted-foreground">
+                            {formatCurrency(q.planAnnualValue)}/yr
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>
