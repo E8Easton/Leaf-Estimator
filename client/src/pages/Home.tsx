@@ -108,6 +108,7 @@ export default function Home() {
   const [selectedServices, setSelectedServices] = useState<Set<ServiceKey>>(new Set<ServiceKey>(["exterior"]));
   const [useScreenSpecial, setUseScreenSpecial] = useState(false);
   const [useOnSiteScreenUpsell, setUseOnSiteScreenUpsell] = useState(false);
+  const [planBundle, setPlanBundle] = useState<"exterior" | "exterior+interior">("exterior");
   const [showInfo, setShowInfo] = useState(false);
 
   // Christmas lights state
@@ -121,33 +122,52 @@ export default function Home() {
   const [totalPulse, setTotalPulse] = useState(false);
   const prevTotalRef = useRef(0);
 
-  const estimate =
+  const isWindows = appMode === "windows";
+
+  // 1) One-time visit quote (includes any selected add-ons; no plan discount)
+  const oneTimeEstimate =
     appMode === "windows"
-      ? calculateEstimate(paneCount, frenchPaneCount, selectedServices, servicePlan, useScreenSpecial, {
+      ? calculateEstimate(paneCount, frenchPaneCount, selectedServices, "none", useScreenSpecial, {
           onSiteScreenUpsell: useOnSiteScreenUpsell,
         })
       : calculateChristmasEstimate(linearFeet, lightType, addGoveePanel, "none");
 
+  // 2) Recurring plan quote (bundle only; screens/tracks excluded by default)
+  const planBundleServices = useCallback(() => {
+    if (!isWindows) return new Set<ServiceKey>();
+    const s = new Set<ServiceKey>();
+    s.add("exterior");
+    if (planBundle === "exterior+interior") s.add("interior");
+    return s;
+  }, [isWindows, planBundle]);
+
+  const planEstimate =
+    appMode === "windows"
+      ? calculateEstimate(paneCount, frenchPaneCount, planBundleServices(), servicePlan, false)
+      : calculateChristmasEstimate(linearFeet, lightType, addGoveePanel, "none");
+
   // One-time price points (no plan discount)
-  const calledOutPrice = estimate.subtotal;
-  const alreadyOutPrice = Math.max(estimate.subtotal - 100, appMode === "windows" ? 125 : 0);
+  const calledOutPrice = oneTimeEstimate.subtotal;
+  const alreadyOutPrice = Math.max(oneTimeEstimate.subtotal - 100, appMode === "windows" ? 125 : 0);
 
   const frenchEquivalent = appMode === "windows" ? frenchPanesToStandard(frenchPaneCount) : 0;
   const totalPanes = appMode === "windows" ? paneCount + frenchEquivalent : 0;
-  const tier = appMode === "windows" ? estimate.tier : null;
+  const tier = appMode === "windows" ? oneTimeEstimate.tier : null;
   const currentTierIndex = tier ? PANE_TIERS.findIndex((t) => t.maxPanes === tier.maxPanes) : -1;
   const hasScreenSpecial = !!(tier?.screenSpecial) && selectedServices.has("screens");
-  const hasAnyTotal = estimate.total > 0 || calledOutPrice > 0;
+  const hasAnyTotal = calledOutPrice > 0;
   const perks = SERVICE_PLAN_PERKS[servicePlan];
 
   useEffect(() => {
-    if (estimate.total !== prevTotalRef.current && estimate.total > 0) {
+    const displayedTotal =
+      appMode === "windows" && servicePlan !== "none" ? planEstimate.total : calledOutPrice;
+    if (displayedTotal !== prevTotalRef.current && displayedTotal > 0) {
       setTotalPulse(true);
       const t = setTimeout(() => setTotalPulse(false), 300);
-      prevTotalRef.current = estimate.total;
+      prevTotalRef.current = displayedTotal;
       return () => clearTimeout(t);
     }
-  }, [estimate.total]);
+  }, [appMode, calledOutPrice, planEstimate.total, servicePlan]);
 
   const handleModeChange = (mode: AppMode) => {
     setAppMode(mode);
@@ -161,6 +181,7 @@ export default function Home() {
     setSelectedServices(new Set<ServiceKey>(["exterior"]));
     setUseScreenSpecial(false);
     setUseOnSiteScreenUpsell(false);
+    setPlanBundle("exterior");
     setLinearFeet(0);
     setLightType("classic");
     setAddGoveePanel(false);
@@ -206,6 +227,9 @@ export default function Home() {
 
       return next;
     });
+
+    // Keep the plan bundle in sync with the quick pick
+    setPlanBundle(preset === "both" ? "exterior+interior" : "exterior");
   }, []);
 
   const handleCopyQuote = () => {
@@ -218,28 +242,28 @@ export default function Home() {
     lines.push(`Service: ${modeLabel}`);
     lines.push("");
 
-    if (estimate.breakdown.length > 0) {
-      lines.push("Services:");
-      estimate.breakdown.forEach((item) => {
+    if (oneTimeEstimate.breakdown.length > 0) {
+      lines.push("One-time services:");
+      oneTimeEstimate.breakdown.forEach((item) => {
         lines.push(`  • ${item.label} — ${formatCurrency(item.price)}`);
       });
       lines.push("");
     }
 
-    if (estimate.planDiscount > 0) {
-      lines.push(`Plan: ${planLabel} (−${formatCurrency(estimate.planDiscount)})`);
-    } else {
-      lines.push(`Plan: ${planLabel}`);
-    }
-
     lines.push("──────────────────────────");
-    if (appMode === "windows" && servicePlan !== "none") {
-      lines.push(`${SERVICE_PLAN_LABELS[servicePlan]}: ${formatCurrency(estimate.total)}`);
-      if (estimate.annualValue) lines.push(`Annual Value: ${formatCurrency(estimate.annualValue)}`);
-      lines.push("");
-    }
     lines.push(`Called Out (one-time): ${formatCurrency(calledOutPrice)}`);
     lines.push(`Already Out (−$100):   ${formatCurrency(alreadyOutPrice)}`);
+
+    if (appMode === "windows" && servicePlan !== "none") {
+      lines.push("");
+      lines.push("Recurring plan (bundle only):");
+      lines.push(`Plan: ${planLabel} (${planBundle === "exterior" ? "Exterior" : "Exterior + Interior"})`);
+      if (planEstimate.planDiscount > 0) {
+        lines.push(`Discount: −${formatCurrency(planEstimate.planDiscount)} / visit`);
+      }
+      lines.push(`Per visit: ${formatCurrency(planEstimate.total)}`);
+      if (planEstimate.annualValue) lines.push(`Annual value: ${formatCurrency(planEstimate.annualValue)}`);
+    }
 
     if (servicePlan !== "none") {
       const includedPerks = PLAN_PERKS_LIST.filter((p) => perks[p.key]).map((p) => p.label);
@@ -301,10 +325,16 @@ export default function Home() {
             </button>
             <div className={`text-right transition-all duration-200 ${totalPulse ? "total-pulse" : ""}`}>
               <p className="text-xs text-white/70 font-medium leading-none">
-                {calledOutPrice > 0 ? (appMode === "windows" && servicePlan !== "none" ? SERVICE_PLAN_LABELS[servicePlan] : "Called Out") : "No quote yet"}
+                {calledOutPrice > 0
+                  ? appMode === "windows" && servicePlan !== "none"
+                    ? `${SERVICE_PLAN_LABELS[servicePlan]} (${planBundle === "exterior" ? "Exterior" : "Ext + Int"})`
+                    : "Called Out"
+                  : "No quote yet"}
               </p>
               <p className="text-2xl font-bold leading-tight text-white font-display">
-                {calledOutPrice > 0 ? formatCurrency(appMode === "windows" && servicePlan !== "none" ? estimate.total : calledOutPrice) : "—"}
+                {calledOutPrice > 0
+                  ? formatCurrency(appMode === "windows" && servicePlan !== "none" ? planEstimate.total : calledOutPrice)
+                  : "—"}
               </p>
             </div>
           </div>
@@ -567,7 +597,7 @@ export default function Home() {
               </div>
 
               {/* On-site upsell: screens for $60 when already there */}
-              {selectedServices.has("screens") && appMode === "windows" && !estimate.isCustom && (
+              {selectedServices.has("screens") && appMode === "windows" && !oneTimeEstimate.isCustom && (
                 <div className="px-4 pb-2">
                   <button
                     onClick={() => {
@@ -743,6 +773,35 @@ export default function Home() {
             <span className="ml-auto text-xs font-semibold text-primary bg-accent px-2 py-0.5 rounded-full">Save up to $150</span>
           </div>
 
+          <div className="px-4 pt-4">
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide font-display mb-2">
+              Plan applies to
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPlanBundle("exterior")}
+                className={`h-10 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
+                  planBundle === "exterior" ? "border-primary bg-accent text-primary" : "border-border bg-secondary text-foreground hover:bg-border"
+                }`}
+              >
+                Exterior
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlanBundle("exterior+interior")}
+                className={`h-10 rounded-xl border-2 text-sm font-bold font-display transition-all active:scale-95 ${
+                  planBundle === "exterior+interior" ? "border-primary bg-accent text-primary" : "border-border bg-secondary text-foreground hover:bg-border"
+                }`}
+              >
+                Ext + Int
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Plan pricing is based on the recurring bundle only. Screens/tracks are quoted separately as needed.
+            </p>
+          </div>
+
           <div className="p-4 space-y-2">
             {(["none", "monthly", "quarterly", "biannual"] as ServicePlanType[]).map((plan) => {
               const isSelected = servicePlan === plan;
@@ -832,18 +891,12 @@ export default function Home() {
 
               {showBreakdown && (
                 <div className="space-y-2 mb-4">
-                  {estimate.breakdown.map((item, i) => (
+                  {oneTimeEstimate.breakdown.map((item, i) => (
                     <div key={i} className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">{item.label}</span>
                       <span className="font-semibold text-foreground font-display">{formatCurrency(item.price)}</span>
                     </div>
                   ))}
-                  {estimate.planDiscount > 0 && (
-                    <div className="flex items-center justify-between text-sm border-t border-border pt-2">
-                      <span className="text-primary font-medium">{SERVICE_PLAN_LABELS[servicePlan]} Discount</span>
-                      <span className="font-bold text-primary font-display">−{formatCurrency(estimate.planDiscount)}</span>
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -851,16 +904,18 @@ export default function Home() {
               {appMode === "windows" && servicePlan !== "none" && (
                 <div className="rounded-xl bg-primary px-4 py-4 flex items-center justify-between mb-3">
                   <div>
-                    <p className="text-primary-foreground/80 text-xs font-medium">{SERVICE_PLAN_LABELS[servicePlan]} Price</p>
+                    <p className="text-primary-foreground/80 text-xs font-medium">
+                      {SERVICE_PLAN_LABELS[servicePlan]} ({planBundle === "exterior" ? "Exterior" : "Ext + Int"})
+                    </p>
                     <p className="text-4xl font-bold text-primary-foreground leading-tight font-display">
-                      {formatCurrency(estimate.total)}
+                      {formatCurrency(planEstimate.total)}
                     </p>
                   </div>
-                  {estimate.annualValue && (
+                  {planEstimate.annualValue && (
                     <div className="text-right">
                       <p className="text-primary-foreground/70 text-xs font-medium">Annual Value</p>
                       <p className="text-xl font-bold text-primary-foreground/90 font-display">
-                        {formatCurrency(estimate.annualValue)}
+                        {formatCurrency(planEstimate.annualValue)}
                       </p>
                     </div>
                   )}
@@ -893,13 +948,13 @@ export default function Home() {
                   <Info size={12} />
                   <span>
                     Priced at <strong>{tier.label}</strong> ({tier.sqftRange})
-                    {estimate.isCustom ? " — custom rate" : ""}
+                    {oneTimeEstimate.isCustom ? " — custom rate" : ""}
                     {frenchPaneCount > 0 ? ` · incl. ${frenchPaneCount} French panes` : ""}
                   </span>
                 </div>
               )}
 
-              {estimate.total >= 275 && (
+              {calledOutPrice >= 275 && (
                 <div className="mt-3 rounded-xl bg-accent px-3 py-2 text-xs text-accent-foreground">
                   <span className="font-semibold">Tech Pay (20%):</span>{" "}
                   {formatCurrency(Math.round(calledOutPrice * 0.20))} · Target revenue/hr: $125+
