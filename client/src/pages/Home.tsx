@@ -12,7 +12,7 @@ import {
   SERVICE_PLAN_PERKS,
   SERVICE_PLAN_DISCOUNTS,
   CHRISTMAS_LIGHT_OPTIONS,
-  calculateWindowEstimate,
+  calculateEstimate,
   calculateChristmasEstimate,
   formatCurrency,
   getTierForPanes,
@@ -122,17 +122,16 @@ export default function Home() {
   const [totalPulse, setTotalPulse] = useState(false);
   const prevTotalRef = useRef(0);
 
-  const totalPanes = paneCount + frenchPaneCount;
-
   const estimate =
     appMode === "windows"
-      ? calculateWindowEstimate(totalPanes, selectedServices, servicePlan, useScreenSpecial, [])
+      ? calculateEstimate(paneCount, frenchPaneCount, selectedServices, servicePlan, useScreenSpecial)
       : calculateChristmasEstimate(linearFeet, lightType, addGoveePanel, "none");
 
   // One-time price points (no plan discount)
   const calledOutPrice = estimate.subtotal;
   const alreadyOutPrice = Math.max(estimate.subtotal - 100, appMode === "windows" ? 125 : 0);
 
+  const totalPanes = appMode === "windows" ? paneCount + frenchPaneCount : 0;
   const tier = appMode === "windows" ? getTierForPanes(totalPanes) : null;
   const currentTierIndex = tier ? PANE_TIERS.findIndex((t) => t.maxPanes === tier.maxPanes) : -1;
   const hasScreenSpecial = !!(tier?.screenSpecial) && selectedServices.has("screens");

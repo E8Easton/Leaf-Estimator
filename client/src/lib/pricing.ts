@@ -98,6 +98,9 @@ export const SERVICE_PLAN_DISCOUNT: Record<ServicePlanType, number> = {
   monthly: 150,    // $150 off per visit [2]
 };
 
+// Compatibility alias (older UI naming)
+export const SERVICE_PLAN_DISCOUNTS = SERVICE_PLAN_DISCOUNT;
+
 export const SERVICE_PLAN_LABELS: Record<ServicePlanType, string> = {
   none: "One-Time",
   biannual: "Biannual Plan",
@@ -117,6 +120,41 @@ export const SERVICE_PLAN_VISITS: Record<ServicePlanType, number> = {
   biannual: 2,
   quarterly: 4,
   monthly: 12,
+};
+
+export interface PlanPerks {
+  leafRainblock: boolean;
+  rainGuarantee: boolean;
+  hardWaterRemoval: boolean;
+  leafTech: boolean;
+}
+
+// Used by the UI to show “included perks”.
+export const SERVICE_PLAN_PERKS: Record<ServicePlanType, PlanPerks> = {
+  none: {
+    leafRainblock: false,
+    rainGuarantee: false,
+    hardWaterRemoval: false,
+    leafTech: false,
+  },
+  monthly: {
+    leafRainblock: true,
+    rainGuarantee: true,
+    hardWaterRemoval: true,
+    leafTech: true,
+  },
+  quarterly: {
+    leafRainblock: true,
+    rainGuarantee: true,
+    hardWaterRemoval: true,
+    leafTech: true,
+  },
+  biannual: {
+    leafRainblock: false,
+    rainGuarantee: false,
+    hardWaterRemoval: false,
+    leafTech: false,
+  },
 };
 
 // French pane multiplier — from video [4]
@@ -234,6 +272,97 @@ export function calculateEstimate(
     planDiscount,
     total,
     annualValue,
+    breakdown,
+  };
+}
+
+// ── Christmas Lights (per linear foot) ──────────────────────────────────────
+
+export type ChristmasLightType = "classic" | "smart" | "permanent";
+
+export interface ChristmasLightOption {
+  key: ChristmasLightType;
+  label: string;
+  description: string;
+  laborPerFt: number;
+  materialsPerFt: number;
+  totalPerFt: number;
+}
+
+export const CHRISTMAS_LIGHT_OPTIONS: ChristmasLightOption[] = [
+  {
+    key: "classic",
+    label: "Classic Installation",
+    description: "Takedown, storage & 3-year material warranty included",
+    laborPerFt: 6,
+    materialsPerFt: 2,
+    totalPerFt: 8,
+  },
+  {
+    key: "smart",
+    label: "Seasonal SMART Lights",
+    description: "GOVEE app-controlled — takedown & storage included",
+    laborPerFt: 8,
+    materialsPerFt: 5,
+    totalPerFt: 13,
+  },
+  {
+    key: "permanent",
+    label: "Permanent Lights",
+    description: "Year-round install, subcontracted — takedown & storage included",
+    laborPerFt: 20,
+    materialsPerFt: 8,
+    totalPerFt: 28,
+  },
+];
+
+export const GOVEE_PANEL_PRICE = 599;
+
+export function calculateChristmasEstimate(
+  linearFeet: number,
+  lightType: ChristmasLightType,
+  addGoveePanel: boolean,
+  plan: ServicePlanType
+): EstimateResult {
+  if (linearFeet <= 0) {
+    return {
+      tier: null,
+      isCustom: false,
+      subtotal: 0,
+      planDiscount: 0,
+      total: 0,
+      annualValue: null,
+      breakdown: [],
+    };
+  }
+
+  const opt = CHRISTMAS_LIGHT_OPTIONS.find((o) => o.key === lightType);
+  if (!opt) {
+    throw new Error(`Unknown ChristmasLightType: ${lightType}`);
+  }
+
+  const breakdown: EstimateResult["breakdown"] = [];
+  const labor = linearFeet * opt.laborPerFt;
+  const materials = linearFeet * opt.materialsPerFt;
+  breakdown.push({ label: `Labor (${linearFeet} ln. ft. × $${opt.laborPerFt})`, price: labor });
+  breakdown.push({ label: `Materials (${linearFeet} ln. ft. × $${opt.materialsPerFt})`, price: materials });
+
+  let subtotal = labor + materials;
+  if (addGoveePanel && lightType === "smart") {
+    breakdown.push({ label: "GOVEE SMART Control Panel", price: GOVEE_PANEL_PRICE });
+    subtotal += GOVEE_PANEL_PRICE;
+  }
+
+  const planDiscount = SERVICE_PLAN_DISCOUNT[plan];
+  const total = Math.max(subtotal - planDiscount, 0);
+
+  return {
+    tier: null,
+    isCustom: false,
+    subtotal,
+    planDiscount,
+    total,
+    annualValue: null,
     breakdown,
   };
 }
