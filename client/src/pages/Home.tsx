@@ -4,7 +4,7 @@
  * Plans: One-Time | Monthly (-$150) | Quarterly (-$100) | Bi-Annual (-$50)
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   PANE_TIERS,
   getTierForPanes,
@@ -17,6 +17,7 @@ import {
   calculateEstimate,
   CUSTOM_PRICE_PER_PANE,
   formatCurrency,
+  type EstimateResult,
   type PaneTier,
   type ServiceKey,
   type ServicePlanType,
@@ -42,6 +43,7 @@ import {
   SquareStack,
   ChevronLeft,
   ChevronRight,
+  Pencil,
 } from "lucide-react";
 
 type UpsellKind = "screens" | "tracks";
@@ -98,6 +100,72 @@ function incrementalUpsellTotal(
   return sum;
 }
 
+/** Each add-on kind sold beyond the logged quote counts as one upsell (e.g. screens + tracks = 2). */
+function countExtraUpsellKindsOnQuote(q: QuoteRecord, kinds: UpsellKind[] | undefined): number {
+  if (!kinds?.length) return 0;
+  return kinds.filter((k) => !q.services.includes(k)).length;
+}
+
+function quoteServiceSet(q: QuoteRecord): Set<ServiceKey> {
+  const svc = new Set<ServiceKey>(q.services);
+  svc.add("exterior");
+  svc.delete("interior");
+  return svc;
+}
+
+function quoteOneTimeEstimate(q: QuoteRecord): EstimateResult {
+  let onSite = !!q.quotedOnSiteScreenUpsell;
+  const svc = quoteServiceSet(q);
+  const prelim = calculateEstimate(q.panes, q.frenchPanes, svc, "none", !!q.quotedScreenSpecial, {
+    onSiteScreenUpsell: onSite,
+  });
+  if (prelim.tier?.maxPanes === 25 && onSite) {
+    onSite = false;
+  }
+  return calculateEstimate(q.panes, q.frenchPanes, svc, "none", !!q.quotedScreenSpecial, {
+    onSiteScreenUpsell: onSite,
+  });
+}
+
+function quotePlanEstimate(q: QuoteRecord): EstimateResult {
+  return calculateEstimate(q.panes, q.frenchPanes, new Set<ServiceKey>(["exterior"]), q.planType, false);
+}
+
+function buildPlanSummaryLine(planType: ServicePlanType, pl: EstimateResult): string {
+  if (planType === "none") return `Plan: ${SERVICE_PLAN_LABELS.none} (no recurring)`;
+  return `Plan: ${SERVICE_PLAN_LABELS[planType]} (Exterior) — ${formatCurrency(pl.total)}/visit · ${pl.annualValue != null ? `${formatCurrency(pl.annualValue)} est./yr` : ""}`;
+}
+
+function buildAddonsSummaryFromOT(ot: EstimateResult): string {
+  const addonLines = ot.breakdown
+    .filter((b) => /screen|track/i.test(b.label))
+    .map((b) => `${b.label} — ${formatCurrency(b.price)}`);
+  return addonLines.length > 0 ? addonLines.join(" · ") : "Add-ons: none";
+}
+
+function recomputeQuoteRecord(q: QuoteRecord): QuoteRecord {
+  const ot = quoteOneTimeEstimate(q);
+  const pl = quotePlanEstimate(q);
+  let quotedOnSiteScreenUpsell = !!q.quotedOnSiteScreenUpsell;
+  if (ot.tier?.maxPanes === 25) quotedOnSiteScreenUpsell = false;
+  const fe = frenchPanesToStandard(q.frenchPanes);
+  return {
+    ...q,
+    frenchEquivalent: fe,
+    totalPanesForTier: q.panes + fe,
+    tierMaxPanes: ot.tier?.maxPanes ?? 0,
+    isCustom: ot.isCustom,
+    tierLabel: ot.tier?.label ?? "Custom",
+    oneTimeSubtotal: ot.subtotal,
+    alreadyOut: Math.max(ot.subtotal - 100, 125),
+    planPerVisit: q.planType === "none" ? null : pl.total,
+    planAnnualValue: q.planType === "none" ? null : pl.annualValue,
+    quotedOnSiteScreenUpsell,
+    planSummary: buildPlanSummaryLine(q.planType, pl),
+    addonsSummary: buildAddonsSummaryFromOT(ot),
+  };
+}
+
 type SalesTrackerStats = {
   quotes: number;
   sales: number;
@@ -113,6 +181,12 @@ function clampNonNegInt(n: unknown): number {
   const num = typeof n === "number" ? n : Number(n);
   if (!Number.isFinite(num)) return 0;
   return Math.max(0, Math.floor(num));
+}
+
+function clampNonNegMoney(n: unknown): number {
+  const num = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.round(num));
 }
 
 function safeReadSalesStats(): SalesTrackerStats {
@@ -157,6 +231,11 @@ const MODE_CONFIG = [
 ];
 
 type QuoteStatus = "quoted" | "sold" | "sold_upsell" | "lost";
+
+/** Quoted or already-sold rows: fix add-ons/plan in history after mistakes. */
+function quoteAllowsHistoryAddonEdit(status: QuoteStatus): boolean {
+  return status === "quoted" || status === "sold" || status === "sold_upsell";
+}
 
 type QuoteRecord = {
   id: string;
@@ -297,11 +376,18 @@ export default function Home() {
   });
   const [pageIndex, setPageIndex] = useState(0);
 
-  const [upsellModalOpen, setUpsellModalOpen] = useState(false);
-  const [upsellModalKinds, setUpsellModalKinds] = useState<Set<UpsellKind>>(() => new Set());
-  const [upsellModalOnSite, setUpsellModalOnSite] = useState(false);
-  const [upsellModalSpecial, setUpsellModalSpecial] = useState(false);
-  const [upsellModalError, setUpsellModalError] = useState<string | null>(null);
+  const [saleModalOpen, setSaleModalOpen] = useState(false);
+  const [includeExtraUpsellsOnSale, setIncludeExtraUpsellsOnSale] = useState(false);
+  const [saleExtraKinds, setSaleExtraKinds] = useState<Set<UpsellKind>>(() => new Set());
+  const [saleModalOnSite, setSaleModalOnSite] = useState(false);
+  const [saleModalSpecial, setSaleModalSpecial] = useState(false);
+  const [saleModalError, setSaleModalError] = useState<string | null>(null);
+
+  const [editQuoteOpen, setEditQuoteOpen] = useState(false);
+  const [editDraft, setEditDraft] = useState<QuoteRecord | null>(null);
+
+  const [statsAdjustOpen, setStatsAdjustOpen] = useState(false);
+  const [statsAdjustDraft, setStatsAdjustDraft] = useState<SalesTrackerStats | null>(null);
 
   // Window cleaning state
   const [paneCount, setPaneCount] = useState(0);
@@ -396,11 +482,16 @@ export default function Home() {
     setCopied(false);
     setShowInfo(false);
     setPageIndex(0);
-    setUpsellModalOpen(false);
-    setUpsellModalKinds(new Set());
-    setUpsellModalOnSite(false);
-    setUpsellModalSpecial(false);
-    setUpsellModalError(null);
+    setSaleModalOpen(false);
+    setIncludeExtraUpsellsOnSale(false);
+    setSaleExtraKinds(new Set());
+    setSaleModalOnSite(false);
+    setSaleModalSpecial(false);
+    setSaleModalError(null);
+    setEditQuoteOpen(false);
+    setEditDraft(null);
+    setStatsAdjustOpen(false);
+    setStatsAdjustDraft(null);
     setActiveQuoteId(null);
     const clearedStats = {
       quotes: 0,
@@ -431,15 +522,8 @@ export default function Home() {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const tierLabel = oneTimeEstimate.tier?.label ?? "Custom";
 
-    const addonLines = oneTimeEstimate.breakdown
-      .filter((b) => /screen|track/i.test(b.label))
-      .map((b) => `${b.label} — ${formatCurrency(b.price)}`);
-    const addonsSummary = addonLines.length > 0 ? addonLines.join(" · ") : "Add-ons: none";
-
-    const planSummary =
-      servicePlan === "none"
-        ? `Plan: ${SERVICE_PLAN_LABELS.none} (no recurring)`
-        : `Plan: ${SERVICE_PLAN_LABELS[servicePlan]} (Exterior) — ${formatCurrency(planEstimate.total)}/visit · ${planEstimate.annualValue != null ? `${formatCurrency(planEstimate.annualValue)} est./yr` : ""}`;
+    const addonsSummary = buildAddonsSummaryFromOT(oneTimeEstimate);
+    const planSummary = buildPlanSummaryLine(servicePlan, planEstimate);
 
     return {
       id,
@@ -508,26 +592,26 @@ export default function Home() {
       if (!id) return;
       const q = quoteHistory.find((x) => x.id === id);
       if (!q) return;
+      if (q.status !== "quoted") return;
 
       const soldAnnual = q.planType !== "none" ? (q.planAnnualValue ?? 0) : 0;
 
       const screenOpts = opts.screenOpts ?? { onSite: false, special: false };
-      const extra =
-        opts.upsell && opts.kinds && opts.kinds.length > 0
-          ? incrementalUpsellTotal(q, opts.kinds, screenOpts)
-          : 0;
+      const hasKinds = !!(opts.kinds && opts.kinds.length > 0);
+      const extraUpsellKindsCount = countExtraUpsellKindsOnQuote(q, opts.kinds);
+      const extra = hasKinds ? incrementalUpsellTotal(q, opts.kinds!, screenOpts) : 0;
 
       const oneTimeRevenueAdd =
-        (q.planType === "none" ? q.oneTimeSubtotal : 0) + (opts.upsell ? extra : 0);
+        (q.planType === "none" ? q.oneTimeSubtotal : 0) + (hasKinds ? extra : 0);
 
-      const upsellKindsFinal = opts.upsell && opts.kinds && opts.kinds.length > 0 ? opts.kinds : undefined;
+      const upsellKindsFinal = hasKinds ? opts.kinds : undefined;
 
       setQuoteHistory((prev) => {
         const next = prev.map((x) =>
           x.id === id
             ? {
                 ...x,
-                status: (opts.upsell ? "sold_upsell" : "sold") as QuoteStatus,
+                status: (hasKinds ? "sold_upsell" : "sold") as QuoteStatus,
                 ...(upsellKindsFinal ? { upsellKinds: upsellKindsFinal } : {}),
               }
             : x
@@ -540,7 +624,7 @@ export default function Home() {
         const next = {
           ...prev,
           sales: prev.sales + 1,
-          upsells: prev.upsells + (opts.upsell ? 1 : 0),
+          upsells: prev.upsells + extraUpsellKindsCount,
           soldRevenueOneTime: prev.soldRevenueOneTime + oneTimeRevenueAdd,
           soldAnnualValue: prev.soldAnnualValue + soldAnnual,
         };
@@ -552,32 +636,87 @@ export default function Home() {
   );
 
   const activeQuoteTarget = activeQuoteId ? quoteHistory.find((x) => x.id === activeQuoteId) ?? null : null;
+  const canMarkSale = activeQuoteTarget?.status === "quoted";
 
-  const openUpsellModal = useCallback(() => {
-    if (!activeQuoteTarget) return;
-    setUpsellModalError(null);
+  const openMarkSaleModal = useCallback(() => {
+    if (!activeQuoteTarget || activeQuoteTarget.status !== "quoted") return;
+    setSaleModalError(null);
+    setIncludeExtraUpsellsOnSale(false);
+    setSaleExtraKinds(new Set());
     const t = resolveTierForQuote(activeQuoteTarget);
     const canOnSite60 = !!t && t.maxPanes > 25;
-    setUpsellModalOnSite(canOnSite60 && (activeQuoteTarget.quotedOnSiteScreenUpsell ?? false));
-    setUpsellModalSpecial(activeQuoteTarget.quotedScreenSpecial ?? false);
-    setUpsellModalKinds(new Set());
-    setUpsellModalOpen(true);
+    setSaleModalOnSite(canOnSite60 && (activeQuoteTarget.quotedOnSiteScreenUpsell ?? false));
+    setSaleModalSpecial(activeQuoteTarget.quotedScreenSpecial ?? false);
+    setSaleModalOpen(true);
   }, [activeQuoteTarget]);
 
-  const confirmUpsellSale = useCallback(() => {
-    const kinds = Array.from(upsellModalKinds);
-    if (kinds.length === 0) {
-      setUpsellModalError("Choose Screens and/or Tracks before confirming.");
-      return;
+  const confirmMarkSale = useCallback(() => {
+    if (!activeQuoteTarget) return;
+    if (includeExtraUpsellsOnSale) {
+      const kinds = Array.from(saleExtraKinds);
+      if (kinds.length === 0) {
+        setSaleModalError('Pick screens/tracks, or turn off “Extra upsells on this sale”.');
+        return;
+      }
+      setSaleModalError(null);
+      applyMarkSale({
+        upsell: true,
+        kinds,
+        screenOpts: { onSite: saleModalOnSite, special: saleModalSpecial },
+      });
+    } else {
+      setSaleModalError(null);
+      applyMarkSale({ upsell: false });
     }
-    setUpsellModalError(null);
-    applyMarkSale({
-      upsell: true,
-      kinds,
-      screenOpts: { onSite: upsellModalOnSite, special: upsellModalSpecial },
+    setSaleModalOpen(false);
+  }, [
+    activeQuoteTarget,
+    applyMarkSale,
+    includeExtraUpsellsOnSale,
+    saleExtraKinds,
+    saleModalOnSite,
+    saleModalSpecial,
+  ]);
+
+  const openEditQuote = useCallback((q: QuoteRecord) => {
+    if (!quoteAllowsHistoryAddonEdit(q.status)) return;
+    setEditDraft({ ...q });
+    setEditQuoteOpen(true);
+  }, []);
+
+  const saveEditQuote = useCallback(() => {
+    if (!editDraft) return;
+    const saved = recomputeQuoteRecord(editDraft);
+    setQuoteHistory((prev) => {
+      const next = prev.map((x) => (x.id === saved.id ? saved : x));
+      safeWriteQuoteHistory(next);
+      return next;
     });
-    setUpsellModalOpen(false);
-  }, [applyMarkSale, upsellModalKinds, upsellModalOnSite, upsellModalSpecial]);
+    setEditQuoteOpen(false);
+    setEditDraft(null);
+  }, [editDraft]);
+
+  const editPreview = useMemo(() => (editDraft ? recomputeQuoteRecord(editDraft) : null), [editDraft]);
+
+  const openStatsAdjust = useCallback(() => {
+    setStatsAdjustDraft({ ...salesStats });
+    setStatsAdjustOpen(true);
+  }, [salesStats]);
+
+  const saveStatsAdjust = useCallback(() => {
+    if (!statsAdjustDraft) return;
+    const next: SalesTrackerStats = {
+      quotes: clampNonNegInt(statsAdjustDraft.quotes),
+      sales: clampNonNegInt(statsAdjustDraft.sales),
+      upsells: clampNonNegInt(statsAdjustDraft.upsells),
+      soldRevenueOneTime: clampNonNegMoney(statsAdjustDraft.soldRevenueOneTime),
+      soldAnnualValue: clampNonNegMoney(statsAdjustDraft.soldAnnualValue),
+    };
+    setSalesStats(next);
+    safeWriteSalesStats(next);
+    setStatsAdjustOpen(false);
+    setStatsAdjustDraft(null);
+  }, [statsAdjustDraft]);
 
   const handleCopyQuote = () => {
     const modeLabel = MODE_CONFIG.find((m) => m.key === appMode)?.label ?? appMode;
@@ -1286,17 +1425,26 @@ export default function Home() {
           <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
             <CheckCircle2 size={18} className="text-primary" />
             <h2 className="font-bold text-foreground font-display">Sales Tracker</h2>
-            <button
-              type="button"
-              onClick={() => {
-                const next = { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
-                setSalesStats(next);
-                safeWriteSalesStats(next);
-              }}
-              className="ml-auto text-xs font-semibold text-muted-foreground hover:text-foreground"
-            >
-              Reset
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={openStatsAdjust}
+                className="text-xs font-semibold text-muted-foreground hover:text-foreground"
+              >
+                Edit counts
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
+                  setSalesStats(next);
+                  safeWriteSalesStats(next);
+                }}
+                className="text-xs font-semibold text-muted-foreground hover:text-foreground"
+              >
+                Reset
+              </button>
+            </div>
           </div>
 
           <div className="p-4 space-y-3">
@@ -1336,9 +1484,9 @@ export default function Home() {
                 </p>
               </div>
               <div className="rounded-xl border border-border bg-white px-3 py-3">
-                <p className="text-[11px] text-muted-foreground font-semibold">Upsell rate</p>
+                <p className="text-[11px] text-muted-foreground font-semibold">Avg upsells / sale</p>
                 <p className="text-lg font-bold font-display text-foreground">
-                  {salesStats.sales > 0 ? `${Math.round((salesStats.upsells / salesStats.sales) * 100)}%` : "—"}
+                  {salesStats.sales > 0 ? (salesStats.upsells / salesStats.sales).toFixed(1) : "—"}
                 </p>
               </div>
             </div>
@@ -1357,23 +1505,19 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  disabled={!activeQuoteId}
-                  onClick={() => applyMarkSale({ upsell: false })}
+                  disabled={!activeQuoteId || !canMarkSale}
+                  onClick={openMarkSaleModal}
                   className="h-11 rounded-xl border-2 border-primary bg-white text-primary font-bold font-display active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
                 >
                   Mark Sale
                 </button>
               </div>
-              <button
-                type="button"
-                disabled={!activeQuoteId}
-                onClick={openUpsellModal}
-                className="mt-2 w-full h-11 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 text-white font-bold font-display active:scale-95 transition-all shadow-md disabled:opacity-40 disabled:pointer-events-none"
-              >
-                Mark Sale + Upsell…
-              </button>
               <p className="mt-2 text-[11px] text-muted-foreground">
-                Tap a quote in history to select it (highlighted), then mark sold. Top Reset clears the calculator and sales counts but keeps history — use Clear there to wipe saved quotes.
+                Select a <strong>quoted</strong> row, then Mark Sale (optional mid-sale upsells in the prompt). Use{" "}
+                <strong>Edit quote</strong> under any quoted or sold row to add/remove add-ons or change plan — including
+                after a sale was recorded by mistake. Use <strong>Edit counts</strong> above to fix quotes/sales/upsells
+                and revenue totals directly. Extra screens <em>and</em> tracks beyond the quote each add +1 upsell.{" "}
+                <strong>Reset</strong> clears tracker only. Clear wipes saved quotes.
               </p>
             </div>
 
@@ -1452,37 +1596,58 @@ export default function Home() {
                       ? "Sold"
                       : "Quoted";
                 return (
-                  <button
+                  <div
                     key={q.id}
-                    type="button"
-                    onClick={() => setActiveQuoteId(q.id)}
-                    className={`w-full rounded-xl border-2 px-3 py-3 text-left transition-all active:scale-[0.99] ${
-                      isActive ? "border-primary bg-accent" : "border-border bg-white hover:bg-secondary"
+                    className={`rounded-xl border-2 overflow-hidden transition-all ${
+                      isActive ? "border-primary bg-accent" : "border-border bg-white"
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className={`text-sm font-bold font-display ${isActive ? "text-primary" : "text-foreground"}`}>
-                          {q.totalPanesForTier} panes · {q.tierLabel}
-                        </p>
-                        <p className="text-[11px] text-muted-foreground leading-snug">{planLine}</p>
-                        <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">{addonsLine}</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {time} · {secondary} · {status}
-                        </p>
-                      </div>
-                      <div className="text-right flex-shrink-0">
-                        <p className={`text-sm font-extrabold font-display ${isActive ? "text-primary" : "text-foreground"}`}>
-                          {primary}
-                        </p>
-                        {q.planType !== "none" && q.planAnnualValue !== null && (
-                          <p className="text-[11px] text-muted-foreground">
-                            {formatCurrency(q.planAnnualValue)}/yr
+                    <button
+                      type="button"
+                      onClick={() => setActiveQuoteId(q.id)}
+                      className={`w-full px-3 py-3 text-left transition-all active:scale-[0.99] ${
+                        isActive ? "bg-transparent" : "hover:bg-secondary"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className={`text-sm font-bold font-display ${isActive ? "text-primary" : "text-foreground"}`}>
+                            {q.totalPanesForTier} panes · {q.tierLabel}
                           </p>
-                        )}
+                          <p className="text-[11px] text-muted-foreground leading-snug">{planLine}</p>
+                          <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">{addonsLine}</p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {time} · {secondary} · {status}
+                          </p>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <p className={`text-sm font-extrabold font-display ${isActive ? "text-primary" : "text-foreground"}`}>
+                            {primary}
+                          </p>
+                          {q.planType !== "none" && q.planAnnualValue !== null && (
+                            <p className="text-[11px] text-muted-foreground">
+                              {formatCurrency(q.planAnnualValue)}/yr
+                            </p>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </button>
+                    </button>
+                    {quoteAllowsHistoryAddonEdit(q.status) && (
+                      <div className="border-t border-border px-2 py-2 flex justify-end bg-secondary/30">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditQuote(q);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-bold font-display text-foreground hover:bg-secondary"
+                        >
+                          <Pencil size={14} aria-hidden />
+                          Edit quote
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 );
               })
             )}
@@ -1528,138 +1693,444 @@ export default function Home() {
         </div>
       )}
 
-      {upsellModalOpen && activeQuoteTarget && (
+      {saleModalOpen && activeQuoteTarget && (
         <div
           className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 bg-black/50"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="upsell-modal-title"
+          aria-labelledby="sale-modal-title"
         >
           <div className="w-full max-w-[400px] rounded-2xl bg-white shadow-2xl border border-border overflow-hidden max-h-[90vh] overflow-y-auto">
-            <div className="px-4 pt-4 pb-3 border-b border-border bg-gradient-to-r from-amber-50 to-rose-50">
-              <h3 id="upsell-modal-title" className="text-lg font-extrabold text-foreground font-display">
-                Mark sale + upsell
+            <div className="px-4 pt-4 pb-3 border-b border-border bg-gradient-to-r from-emerald-50 to-sky-50">
+              <h3 id="sale-modal-title" className="text-lg font-extrabold text-foreground font-display">
+                Record sale
               </h3>
               <p className="text-xs text-muted-foreground mt-1">
-                Choose what was upsold on this job. Extra revenue counts only for add-ons <strong>not</strong> already in the logged quote.
+                Turn on the switch only if you sold <strong>extra</strong> screens or tracks that were{" "}
+                <strong>not</strong> already on this logged quote. Otherwise leave it off — one tap records the sale.
               </p>
             </div>
             <div className="p-4 space-y-3">
-              {(["screens", "tracks"] as UpsellKind[]).map((kind) => {
-                const label = kind === "screens" ? "Screens" : "Tracks";
-                const inQuote = activeQuoteTarget.services.includes(kind);
-                const price = getUpsellLinePrice(activeQuoteTarget, kind, {
-                  onSite: upsellModalOnSite,
-                  special: upsellModalSpecial,
-                });
-                const tracksCustom = kind === "tracks" && price === 0;
-                const checked = upsellModalKinds.has(kind);
-                return (
-                  <button
-                    key={kind}
-                    type="button"
-                    onClick={() => {
-                      setUpsellModalKinds((prev) => {
-                        const n = new Set(prev);
-                        if (n.has(kind)) n.delete(kind);
-                        else n.add(kind);
-                        return n;
-                      });
-                      setUpsellModalError(null);
-                    }}
-                    className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between text-left transition-all ${
-                      checked ? "border-amber-500 bg-amber-50" : "border-border bg-secondary/40 hover:bg-secondary"
-                    }`}
-                  >
-                    <div>
-                      <p className="font-bold font-display text-foreground">{label}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {inQuote
-                          ? "Already in logged quote — won’t double-count revenue"
-                          : tracksCustom
-                            ? "Full-house tracks — custom quote (not auto-added to revenue)"
-                            : `Adds ${formatCurrency(price)} if selected`}
-                      </p>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <p className="text-lg font-extrabold font-display text-amber-700">
-                        {tracksCustom ? "Custom" : formatCurrency(price)}
-                      </p>
-                      {checked && <CheckCircle2 size={18} className="text-amber-600 inline-block mt-1" />}
-                    </div>
-                  </button>
-                );
-              })}
+              <label className="flex items-start gap-3 rounded-xl border-2 border-border bg-secondary/30 px-3 py-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 rounded border-border"
+                  checked={includeExtraUpsellsOnSale}
+                  onChange={() => {
+                    setIncludeExtraUpsellsOnSale((v) => !v);
+                    setSaleModalError(null);
+                  }}
+                />
+                <span className="text-sm text-foreground">
+                  <span className="font-bold font-display">Extra upsells on this sale</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">
+                    Mid-job add-ons that were not in the quote when you logged it.
+                  </span>
+                </span>
+              </label>
 
-              {upsellModalKinds.has("screens") && (
-                <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/50 p-3">
-                  <p className="text-xs font-bold text-amber-900 font-display">Screen pricing mode</p>
-                  {resolveTierForQuote(activeQuoteTarget)?.maxPanes === 25 && (
-                    <p className="text-[11px] text-amber-900/80">
-                      ≤25 panes: on-site <strong>$60</strong> does not apply — use tier screen price or the special below.
-                    </p>
-                  )}
-                  {resolveTierForQuote(activeQuoteTarget) &&
-                    resolveTierForQuote(activeQuoteTarget)!.maxPanes > 25 && (
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={upsellModalOnSite}
-                        onChange={() => {
-                          setUpsellModalOnSite((v) => {
-                            const next = !v;
-                            if (next) setUpsellModalSpecial(false);
-                            return next;
+              {includeExtraUpsellsOnSale && (
+                <>
+                  {(["screens", "tracks"] as UpsellKind[]).map((kind) => {
+                    const label = kind === "screens" ? "Screens" : "Tracks";
+                    const inQuote = activeQuoteTarget.services.includes(kind);
+                    const price = getUpsellLinePrice(activeQuoteTarget, kind, {
+                      onSite: saleModalOnSite,
+                      special: saleModalSpecial,
+                    });
+                    const tracksCustom = kind === "tracks" && price === 0;
+                    const checked = saleExtraKinds.has(kind);
+                    return (
+                      <button
+                        key={kind}
+                        type="button"
+                        onClick={() => {
+                          setSaleExtraKinds((prev) => {
+                            const n = new Set(prev);
+                            if (n.has(kind)) n.delete(kind);
+                            else n.add(kind);
+                            return n;
                           });
+                          setSaleModalError(null);
                         }}
-                        className="rounded border-border"
-                      />
-                      On-site upsell ($60)
-                    </label>
+                        className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between text-left transition-all ${
+                          checked ? "border-amber-500 bg-amber-50" : "border-border bg-secondary/40 hover:bg-secondary"
+                        }`}
+                      >
+                        <div>
+                          <p className="font-bold font-display text-foreground">{label}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {inQuote
+                              ? "Already in logged quote — won’t double-count revenue"
+                              : tracksCustom
+                                ? "Full-house tracks — custom quote (not auto-added to revenue)"
+                                : `Adds ${formatCurrency(price)} if selected`}
+                          </p>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <p className="text-lg font-extrabold font-display text-amber-700">
+                            {tracksCustom ? "Custom" : formatCurrency(price)}
+                          </p>
+                          {checked && <CheckCircle2 size={18} className="text-amber-600 inline-block mt-1" />}
+                        </div>
+                      </button>
+                    );
+                  })}
+
+                  {saleExtraKinds.has("screens") && (
+                    <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+                      <p className="text-xs font-bold text-amber-900 font-display">Screen pricing mode</p>
+                      {resolveTierForQuote(activeQuoteTarget)?.maxPanes === 25 && (
+                        <p className="text-[11px] text-amber-900/80">
+                          ≤25 panes: on-site <strong>$60</strong> does not apply — use tier screen price or the special below.
+                        </p>
+                      )}
+                      {resolveTierForQuote(activeQuoteTarget) &&
+                        resolveTierForQuote(activeQuoteTarget)!.maxPanes > 25 && (
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={saleModalOnSite}
+                              onChange={() => {
+                                setSaleModalOnSite((v) => {
+                                  const next = !v;
+                                  if (next) setSaleModalSpecial(false);
+                                  return next;
+                                });
+                              }}
+                              className="rounded border-border"
+                            />
+                            On-site upsell ($60)
+                          </label>
+                        )}
+                      {!activeQuoteTarget.isCustom && resolveTierForQuote(activeQuoteTarget)?.screenSpecial != null && (
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={saleModalSpecial}
+                            disabled={saleModalOnSite}
+                            onChange={() => setSaleModalSpecial((v) => !v)}
+                            className="rounded border-border"
+                          />
+                          $25 screen special (tier)
+                        </label>
+                      )}
+                    </div>
                   )}
-                  {!activeQuoteTarget.isCustom && resolveTierForQuote(activeQuoteTarget)?.screenSpecial != null && (
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={upsellModalSpecial}
-                        disabled={upsellModalOnSite}
-                        onChange={() => setUpsellModalSpecial((v) => !v)}
-                        className="rounded border-border"
-                      />
-                      $25 screen special (tier)
-                    </label>
-                  )}
-                </div>
+                </>
               )}
 
-              {upsellModalError && <p className="text-sm text-destructive font-medium">{upsellModalError}</p>}
+              {saleModalError && <p className="text-sm text-destructive font-medium">{saleModalError}</p>}
 
-              <p className="text-xs text-muted-foreground">
-                Extra from selections:{" "}
-                <strong>
-                  {formatCurrency(
-                    incrementalUpsellTotal(activeQuoteTarget, Array.from(upsellModalKinds), {
-                      onSite: upsellModalOnSite,
-                      special: upsellModalSpecial,
-                    })
-                  )}
-                </strong>
-              </p>
+              {includeExtraUpsellsOnSale && (
+                <p className="text-xs text-muted-foreground">
+                  Extra from selections:{" "}
+                  <strong>
+                    {formatCurrency(
+                      incrementalUpsellTotal(activeQuoteTarget, Array.from(saleExtraKinds), {
+                        onSite: saleModalOnSite,
+                        special: saleModalSpecial,
+                      })
+                    )}
+                  </strong>
+                </p>
+              )}
 
               <div className="grid grid-cols-2 gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setUpsellModalOpen(false)}
+                  onClick={() => setSaleModalOpen(false)}
                   className="h-11 rounded-xl border-2 border-border font-bold font-display"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
-                  onClick={confirmUpsellSale}
-                  className="h-11 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 text-white font-bold font-display"
+                  onClick={confirmMarkSale}
+                  className="h-11 rounded-xl bg-primary text-primary-foreground font-bold font-display"
                 >
                   Confirm sale
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editQuoteOpen && editDraft && editPreview && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 bg-black/50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-quote-modal-title"
+        >
+          <div className="w-full max-w-[400px] rounded-2xl bg-white shadow-2xl border border-border overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="px-4 pt-4 pb-3 border-b border-border bg-gradient-to-r from-violet-50 to-sky-50">
+              <h3 id="edit-quote-modal-title" className="text-lg font-extrabold text-foreground font-display">
+                Edit quote
+              </h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                {editDraft.status === "quoted"
+                  ? "Add or remove screens/tracks and adjust the plan before you mark it sold. Totals update live."
+                  : "This row is already marked sold — use this to correct what was on the quote (add-ons, plan). Totals update live."}
+              </p>
+            </div>
+            <div className="p-4 space-y-4">
+              {(editDraft.status === "sold" || editDraft.status === "sold_upsell") && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950">
+                  <strong className="font-display">Note:</strong> Sales tracker numbers (close rate, sold revenue) were
+                  captured when you marked the sale and are <strong>not</strong> changed here. Use{" "}
+                  <strong>Edit counts</strong> on the tracker to line them up, or <strong>Reset</strong> to zero everything.
+                </div>
+              )}
+              <div className="rounded-xl border border-border bg-secondary/40 px-3 py-2 text-sm">
+                <p className="font-bold font-display text-foreground">
+                  {editPreview.totalPanesForTier} panes · {editPreview.tierLabel}
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Panes are fixed here — use the calculator for a new pane count.</p>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide font-display mb-2">
+                  Service plan
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["none", "monthly", "quarterly", "biannual"] as ServicePlanType[]).map((plan) => {
+                    const on = editDraft.planType === plan;
+                    const st = PLAN_CARD_STYLES[plan];
+                    return (
+                      <button
+                        key={plan}
+                        type="button"
+                        onClick={() =>
+                          setEditDraft((d) =>
+                            d ? { ...d, planType: plan, planBundle: PLAN_BUNDLE_ACTIVE } : d
+                          )
+                        }
+                        className={`rounded-xl border-2 px-3 py-2 text-left text-xs font-bold font-display transition-all ${
+                          on ? st.selected : st.idle
+                        }`}
+                      >
+                        {SERVICE_PLAN_LABELS[plan]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1.5">{SERVICE_PLAN_DESCRIPTIONS[editDraft.planType]}</p>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide font-display mb-2">
+                  Add-ons on quote
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {UPSELL_SERVICE_CONFIG.map((s) => {
+                    const on = editDraft.services.includes(s.key);
+                    return (
+                      <button
+                        key={s.key}
+                        type="button"
+                        onClick={() =>
+                          setEditDraft((d) => {
+                            if (!d) return d;
+                            const nextSvc = new Set(d.services);
+                            const has = nextSvc.has(s.key);
+                            if (has) {
+                              nextSvc.delete(s.key);
+                              const arr = Array.from(nextSvc) as ServiceKey[];
+                              if (s.key === "screens") {
+                                return {
+                                  ...d,
+                                  services: arr,
+                                  quotedScreenSpecial: false,
+                                  quotedOnSiteScreenUpsell: false,
+                                };
+                              }
+                              return { ...d, services: arr };
+                            }
+                            nextSvc.add(s.key);
+                            return { ...d, services: Array.from(nextSvc) as ServiceKey[] };
+                          })
+                        }
+                        className={`rounded-xl border-2 px-3 py-3 text-left transition-all ${
+                          on ? "border-primary bg-accent" : "border-border bg-secondary/40 hover:bg-secondary"
+                        }`}
+                      >
+                        <p className="font-bold font-display text-foreground text-sm">{s.label}</p>
+                        <p className="text-[10px] text-muted-foreground leading-tight mt-0.5">{s.description}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {editDraft.services.includes("screens") && (
+                <div className="space-y-2 rounded-xl border border-border bg-amber-50/40 p-3">
+                  <p className="text-xs font-bold text-amber-950 font-display">Screen pricing on quote</p>
+                  {resolveTierForQuote(editPreview)?.maxPanes === 25 && (
+                    <p className="text-[11px] text-amber-900/85">
+                      ≤25 panes: on-site <strong>$60</strong> is cleared automatically for this tier.
+                    </p>
+                  )}
+                  {resolveTierForQuote(editPreview) && resolveTierForQuote(editPreview)!.maxPanes > 25 && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="rounded border-border"
+                        checked={!!editDraft.quotedOnSiteScreenUpsell}
+                        onChange={() =>
+                          setEditDraft((d) => {
+                            if (!d) return d;
+                            const next = !d.quotedOnSiteScreenUpsell;
+                            return {
+                              ...d,
+                              quotedOnSiteScreenUpsell: next,
+                              quotedScreenSpecial: next ? false : d.quotedScreenSpecial,
+                            };
+                          })
+                        }
+                      />
+                      On-site ($60)
+                    </label>
+                  )}
+                  {!editPreview.isCustom && resolveTierForQuote(editPreview)?.screenSpecial != null && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="rounded border-border"
+                        checked={!!editDraft.quotedScreenSpecial}
+                        disabled={!!editDraft.quotedOnSiteScreenUpsell}
+                        onChange={() => setEditDraft((d) => (d ? { ...d, quotedScreenSpecial: !d.quotedScreenSpecial } : d))}
+                      />
+                      Tier screen special
+                    </label>
+                  )}
+                </div>
+              )}
+
+              <div className="rounded-xl border border-dashed border-border bg-secondary/20 px-3 py-2 space-y-1 text-[11px] text-muted-foreground">
+                <p className="font-semibold text-foreground text-xs font-display">Preview</p>
+                <p>{editPreview.planSummary}</p>
+                <p>{editPreview.addonsSummary}</p>
+                <p className="text-foreground font-bold font-display pt-1">
+                  One-time subtotal: {formatCurrency(editPreview.oneTimeSubtotal)}
+                </p>
+                {editPreview.planType !== "none" && editPreview.planPerVisit != null && (
+                  <p>
+                    Plan: {formatCurrency(editPreview.planPerVisit)}/visit
+                    {editPreview.planAnnualValue != null ? ` · ${formatCurrency(editPreview.planAnnualValue)} est./yr` : ""}
+                  </p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditQuoteOpen(false);
+                    setEditDraft(null);
+                  }}
+                  className="h-11 rounded-xl border-2 border-border font-bold font-display"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveEditQuote}
+                  className="h-11 rounded-xl bg-primary text-primary-foreground font-bold font-display"
+                >
+                  Save changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {statsAdjustOpen && statsAdjustDraft && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 bg-black/50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="stats-adjust-title"
+        >
+          <div className="w-full max-w-[400px] rounded-2xl bg-white shadow-2xl border border-border overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="px-4 pt-4 pb-3 border-b border-border bg-secondary/40">
+              <h3 id="stats-adjust-title" className="text-lg font-extrabold text-foreground font-display">
+                Edit sales tracker
+              </h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Correct quotes logged, closes, upsell line items, and sold revenue for today. Values save to this device.
+              </p>
+            </div>
+            <div className="p-4 space-y-3">
+              {(
+                [
+                  { key: "quotes" as const, label: "Quotes logged" },
+                  { key: "sales" as const, label: "Sales (closed)" },
+                  { key: "upsells" as const, label: "Upsells (line items)" },
+                ] as const
+              ).map(({ key, label }) => (
+                <label key={key} className="block">
+                  <span className="text-[11px] font-bold text-muted-foreground font-display">{label}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="mt-1 w-full rounded-xl border-2 border-border px-3 py-2 text-sm font-semibold"
+                    value={statsAdjustDraft[key]}
+                    onChange={(e) => {
+                      const v = clampNonNegInt(e.target.value === "" ? 0 : Number(e.target.value));
+                      setStatsAdjustDraft((d) => (d ? { ...d, [key]: v } : d));
+                    }}
+                  />
+                </label>
+              ))}
+              <label className="block">
+                <span className="text-[11px] font-bold text-muted-foreground font-display">Sold (one-time revenue, $)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="mt-1 w-full rounded-xl border-2 border-border px-3 py-2 text-sm font-semibold"
+                  value={statsAdjustDraft.soldRevenueOneTime}
+                  onChange={(e) => {
+                    const v = clampNonNegMoney(e.target.value === "" ? 0 : Number(e.target.value));
+                    setStatsAdjustDraft((d) => (d ? { ...d, soldRevenueOneTime: v } : d));
+                  }}
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] font-bold text-muted-foreground font-display">Sold (annual value, $)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="mt-1 w-full rounded-xl border-2 border-border px-3 py-2 text-sm font-semibold"
+                  value={statsAdjustDraft.soldAnnualValue}
+                  onChange={(e) => {
+                    const v = clampNonNegMoney(e.target.value === "" ? 0 : Number(e.target.value));
+                    setStatsAdjustDraft((d) => (d ? { ...d, soldAnnualValue: v } : d));
+                  }}
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatsAdjustOpen(false);
+                    setStatsAdjustDraft(null);
+                  }}
+                  className="h-11 rounded-xl border-2 border-border font-bold font-display"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveStatsAdjust}
+                  className="h-11 rounded-xl bg-primary text-primary-foreground font-bold font-display"
+                >
+                  Save
                 </button>
               </div>
             </div>
