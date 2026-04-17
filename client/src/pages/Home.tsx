@@ -65,7 +65,11 @@ function getUpsellLinePrice(
   kind: UpsellKind,
   screenOpts: { onSite: boolean; special: boolean }
 ): number {
-  if (kind === "screens" && screenOpts.onSite) return 60;
+  if (kind === "screens" && screenOpts.onSite) {
+    const t = resolveTierForQuote(q);
+    if (t?.maxPanes === 25) return t.screens;
+    return 60;
+  }
   if (q.isCustom) {
     if (kind === "screens") return Math.round(q.totalPanesForTier * 2.5);
     if (kind === "tracks") return 0;
@@ -178,6 +182,10 @@ type QuoteRecord = {
   quotedOnSiteScreenUpsell?: boolean;
   /** Set when status is sold_upsell */
   upsellKinds?: UpsellKind[];
+  /** Human-readable plan at log time */
+  planSummary?: string;
+  /** Human-readable add-ons / upsells at log time */
+  addonsSummary?: string;
 };
 
 function safeReadQuoteHistory(): QuoteRecord[] {
@@ -369,6 +377,12 @@ export default function Home() {
     }
   }, [appMode, calledOutPrice, planEstimate.total, servicePlan]);
 
+  useEffect(() => {
+    if (tier?.maxPanes === 25 && useOnSiteScreenUpsell) {
+      setUseOnSiteScreenUpsell(false);
+    }
+  }, [tier?.maxPanes, useOnSiteScreenUpsell]);
+
   // Single-mode app (Windows). Keep this for future expansion.
 
   const fullReset = () => {
@@ -387,6 +401,16 @@ export default function Home() {
     setUpsellModalOnSite(false);
     setUpsellModalSpecial(false);
     setUpsellModalError(null);
+    setActiveQuoteId(null);
+    const clearedStats = {
+      quotes: 0,
+      sales: 0,
+      upsells: 0,
+      soldRevenueOneTime: 0,
+      soldAnnualValue: 0,
+    };
+    setSalesStats(clearedStats);
+    safeWriteSalesStats(clearedStats);
   };
 
   const toggleService = useCallback((key: ServiceKey) => {
@@ -406,6 +430,17 @@ export default function Home() {
     if (calledOutPrice <= 0) return null;
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const tierLabel = oneTimeEstimate.tier?.label ?? "Custom";
+
+    const addonLines = oneTimeEstimate.breakdown
+      .filter((b) => /screen|track/i.test(b.label))
+      .map((b) => `${b.label} — ${formatCurrency(b.price)}`);
+    const addonsSummary = addonLines.length > 0 ? addonLines.join(" · ") : "Add-ons: none";
+
+    const planSummary =
+      servicePlan === "none"
+        ? `Plan: ${SERVICE_PLAN_LABELS.none} (no recurring)`
+        : `Plan: ${SERVICE_PLAN_LABELS[servicePlan]} (Exterior) — ${formatCurrency(planEstimate.total)}/visit · ${planEstimate.annualValue != null ? `${formatCurrency(planEstimate.annualValue)} est./yr` : ""}`;
+
     return {
       id,
       createdAt: Date.now(),
@@ -426,6 +461,8 @@ export default function Home() {
       status: "quoted",
       quotedScreenSpecial: useScreenSpecial,
       quotedOnSiteScreenUpsell: useOnSiteScreenUpsell,
+      planSummary,
+      addonsSummary,
     };
   }, [
     alreadyOutPrice,
@@ -440,6 +477,7 @@ export default function Home() {
     totalPanes,
     oneTimeEstimate.tier,
     oneTimeEstimate.isCustom,
+    oneTimeEstimate.breakdown,
     useScreenSpecial,
     useOnSiteScreenUpsell,
   ]);
@@ -466,7 +504,7 @@ export default function Home() {
       kinds?: UpsellKind[];
       screenOpts?: { onSite: boolean; special: boolean };
     }) => {
-      const id = activeQuoteId ?? quoteHistory[0]?.id ?? null;
+      const id = activeQuoteId;
       if (!id) return;
       const q = quoteHistory.find((x) => x.id === id);
       if (!q) return;
@@ -513,13 +551,14 @@ export default function Home() {
     [activeQuoteId, quoteHistory]
   );
 
-  const activeQuoteTarget =
-    quoteHistory.find((x) => x.id === activeQuoteId) ?? quoteHistory[0] ?? null;
+  const activeQuoteTarget = activeQuoteId ? quoteHistory.find((x) => x.id === activeQuoteId) ?? null : null;
 
   const openUpsellModal = useCallback(() => {
     if (!activeQuoteTarget) return;
     setUpsellModalError(null);
-    setUpsellModalOnSite(activeQuoteTarget.quotedOnSiteScreenUpsell ?? false);
+    const t = resolveTierForQuote(activeQuoteTarget);
+    const canOnSite60 = !!t && t.maxPanes > 25;
+    setUpsellModalOnSite(canOnSite60 && (activeQuoteTarget.quotedOnSiteScreenUpsell ?? false));
     setUpsellModalSpecial(activeQuoteTarget.quotedScreenSpecial ?? false);
     setUpsellModalKinds(new Set());
     setUpsellModalOpen(true);
@@ -557,6 +596,21 @@ export default function Home() {
       });
       lines.push("");
     }
+
+    lines.push("Service plan:");
+    lines.push(
+      servicePlan === "none"
+        ? `  • ${SERVICE_PLAN_LABELS.none} (no recurring)`
+        : `  • ${SERVICE_PLAN_LABELS[servicePlan]} (Exterior) — ${formatCurrency(planEstimate.total)}/visit` +
+            (planEstimate.annualValue ? ` · ${formatCurrency(planEstimate.annualValue)} est./yr` : "")
+    );
+    const addonBits = oneTimeEstimate.breakdown
+      .filter((b) => /screen|track/i.test(b.label))
+      .map((b) => `  • ${b.label} — ${formatCurrency(b.price)}`);
+    lines.push("Add-ons / upsells:");
+    if (addonBits.length > 0) addonBits.forEach((l) => lines.push(l));
+    else lines.push("  • None");
+    lines.push("");
 
     lines.push("──────────────────────────");
     lines.push(`Called Out (one-time): ${formatCurrency(calledOutPrice)}`);
@@ -898,10 +952,10 @@ export default function Home() {
                   const isSelected = selectedServices.has(svc.key);
                   let price: number | null = null;
                   if (tier) {
-                    if (svc.key === "screens" && useScreenSpecial && tier.screenSpecial !== null) {
-                      price = tier.screenSpecial;
-                    } else if (svc.key === "screens") {
-                      price = tier.screens;
+                    if (svc.key === "screens") {
+                      if (useOnSiteScreenUpsell && tier.maxPanes > 25) price = 60;
+                      else if (useScreenSpecial && tier.screenSpecial !== null) price = tier.screenSpecial;
+                      else price = tier.screens;
                     } else {
                       price = tier.tracks;
                     }
@@ -950,9 +1004,21 @@ export default function Home() {
                 })}
               </div>
 
-              {selectedServices.has("screens") && appMode === "windows" && !oneTimeEstimate.isCustom && (
+              {tier?.maxPanes === 25 && selectedServices.has("screens") && (
+                <p className="px-4 text-[11px] text-muted-foreground -mt-1 mb-2">
+                  On-site <strong>$60</strong> screens apply from the <strong>26+</strong> panes tier. Up to 25 panes, screens stay{" "}
+                  <strong>{formatCurrency(tier.screens)}</strong> unless you use the special below.
+                </p>
+              )}
+
+              {selectedServices.has("screens") &&
+                appMode === "windows" &&
+                !oneTimeEstimate.isCustom &&
+                tier &&
+                tier.maxPanes > 25 && (
                 <div className="px-4 pb-2">
                   <button
+                    type="button"
                     onClick={() => {
                       const next = !useOnSiteScreenUpsell;
                       setUseOnSiteScreenUpsell(next);
@@ -964,9 +1030,11 @@ export default function Home() {
                   >
                     <div className="text-left">
                       <p className={`text-sm font-bold ${useOnSiteScreenUpsell ? "text-slate-700" : "text-foreground"}`}>
-                        On-site screen upsell
+                        On-site screen upsell ($60)
                       </p>
-                      <p className="text-xs text-muted-foreground">If you’re already there: quote screens for $60</p>
+                      <p className="text-xs text-muted-foreground">
+                        From 26+ panes tier. First tier (≤25) stays the listed screen price ($50).
+                      </p>
                     </div>
                     <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${useOnSiteScreenUpsell ? "border-slate-400 bg-slate-400" : "border-border"}`}>
                       {useOnSiteScreenUpsell && <div className="w-2 h-2 rounded-full bg-white" />}
@@ -1289,7 +1357,7 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  disabled={!activeQuoteTarget}
+                  disabled={!activeQuoteId}
                   onClick={() => applyMarkSale({ upsell: false })}
                   className="h-11 rounded-xl border-2 border-primary bg-white text-primary font-bold font-display active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
                 >
@@ -1298,14 +1366,14 @@ export default function Home() {
               </div>
               <button
                 type="button"
-                disabled={!activeQuoteTarget}
+                disabled={!activeQuoteId}
                 onClick={openUpsellModal}
                 className="mt-2 w-full h-11 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 text-white font-bold font-display active:scale-95 transition-all shadow-md disabled:opacity-40 disabled:pointer-events-none"
               >
                 Mark Sale + Upsell…
               </button>
               <p className="mt-2 text-[11px] text-muted-foreground">
-                Tip: tap a saved quote below to make it “active”, then mark it sold. Upsell opens a picker for screens / tracks.
+                Tap a quote in history to select it (highlighted), then mark sold. Top Reset clears the calculator and sales counts but keeps history — use Clear there to wipe saved quotes.
               </p>
             </div>
 
@@ -1352,6 +1420,27 @@ export default function Home() {
                 const time = new Date(q.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
                 const primary = q.planType === "none" ? formatCurrency(q.oneTimeSubtotal) : `${formatCurrency(q.planPerVisit ?? 0)}/visit`;
                 const secondary = q.planType === "none" ? "One-time" : `${SERVICE_PLAN_LABELS[q.planType]} (${q.planBundle === "exterior" ? "Exterior" : "Ext + Int"})`;
+                const planLine =
+                  q.planSummary ??
+                  (q.planType === "none"
+                    ? `Plan: ${SERVICE_PLAN_LABELS.none}`
+                    : `Plan: ${SERVICE_PLAN_LABELS[q.planType]} (${q.planBundle === "exterior" ? "Exterior" : "Ext + Int"})`);
+                const addonsLine =
+                  q.addonsSummary ??
+                  (() => {
+                    const bits: string[] = [];
+                    if (q.services.includes("screens")) {
+                      bits.push(
+                        q.quotedOnSiteScreenUpsell
+                          ? "Screens (on-site)"
+                          : q.quotedScreenSpecial
+                            ? "Screens (special)"
+                            : "Screens"
+                      );
+                    }
+                    if (q.services.includes("tracks")) bits.push("Tracks");
+                    return bits.length ? `Add-ons: ${bits.join(", ")}` : "Add-ons: none";
+                  })();
                 const upsellNote =
                   q.status === "sold_upsell" && q.upsellKinds?.length
                     ? ` (${q.upsellKinds.map((k) => (k === "screens" ? "Screens" : "Tracks")).join(", ")})`
@@ -1376,7 +1465,9 @@ export default function Home() {
                         <p className={`text-sm font-bold font-display ${isActive ? "text-primary" : "text-foreground"}`}>
                           {q.totalPanesForTier} panes · {q.tierLabel}
                         </p>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="text-[11px] text-muted-foreground leading-snug">{planLine}</p>
+                        <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">{addonsLine}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
                           {time} · {secondary} · {status}
                         </p>
                       </div>
@@ -1503,21 +1594,29 @@ export default function Home() {
               {upsellModalKinds.has("screens") && (
                 <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/50 p-3">
                   <p className="text-xs font-bold text-amber-900 font-display">Screen pricing mode</p>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={upsellModalOnSite}
-                      onChange={() => {
-                        setUpsellModalOnSite((v) => {
-                          const next = !v;
-                          if (next) setUpsellModalSpecial(false);
-                          return next;
-                        });
-                      }}
-                      className="rounded border-border"
-                    />
-                    On-site upsell ($60)
-                  </label>
+                  {resolveTierForQuote(activeQuoteTarget)?.maxPanes === 25 && (
+                    <p className="text-[11px] text-amber-900/80">
+                      ≤25 panes: on-site <strong>$60</strong> does not apply — use tier screen price or the special below.
+                    </p>
+                  )}
+                  {resolveTierForQuote(activeQuoteTarget) &&
+                    resolveTierForQuote(activeQuoteTarget)!.maxPanes > 25 && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={upsellModalOnSite}
+                        onChange={() => {
+                          setUpsellModalOnSite((v) => {
+                            const next = !v;
+                            if (next) setUpsellModalSpecial(false);
+                            return next;
+                          });
+                        }}
+                        className="rounded border-border"
+                      />
+                      On-site upsell ($60)
+                    </label>
+                  )}
                   {!activeQuoteTarget.isCustom && resolveTierForQuote(activeQuoteTarget)?.screenSpecial != null && (
                     <label className="flex items-center gap-2 text-sm">
                       <input

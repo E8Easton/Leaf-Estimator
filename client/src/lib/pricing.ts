@@ -257,12 +257,18 @@ export function calculateEstimate(
     if (selectedServices.has("screens")) {
       const onSite = !!opts.onSiteScreenUpsell;
       const hasSpecial = useScreenSpecial && tier!.screenSpecial !== null;
-      const screenPrice = onSite ? 60 : hasSpecial ? tier!.screenSpecial! : tier!.screens;
-      const screenLabel = onSite
-        ? "Screen Cleaning (ON-SITE UPSALE)"
-        : hasSpecial
-        ? "Screen Cleaning (SPECIAL $25)"
-        : "Screen Cleaning";
+      // On-site $60 applies from 26+ panes tier up; first tier (≤25) stays tier screen price ($50).
+      const firstTier = tier!.maxPanes === 25;
+      const screenPrice =
+        onSite && !firstTier ? 60 : hasSpecial ? tier!.screenSpecial! : tier!.screens;
+      const screenLabel =
+        onSite && !firstTier
+          ? "Screen Cleaning (ON-SITE UPSALE)"
+          : onSite && firstTier
+            ? "Screen Cleaning"
+            : hasSpecial
+              ? "Screen Cleaning (SPECIAL $25)"
+              : "Screen Cleaning";
       breakdown.push({ label: screenLabel, price: screenPrice });
       subtotal += screenPrice;
     }
