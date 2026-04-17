@@ -5,6 +5,17 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useSupabaseSession } from "@/contexts/SupabaseSessionProvider";
+import {
+  clampNonNegInt,
+  clampNonNegMoney,
+  readLocalQuoteHistory,
+  readLocalSalesStats,
+  writeLocalQuoteHistory,
+  writeLocalSalesStats,
+} from "@/lib/localEstimatorStorage";
+import { fetchUserAppDataRow, mergeRemoteAndLocal, upsertUserAppData } from "@/lib/remoteEstimatorSync";
+import type { QuoteRecord, QuoteStatus, SalesTrackerStats, UpsellKind } from "@/types/leafData";
 import {
   PANE_TIERS,
   getTierForPanes,
@@ -45,8 +56,6 @@ import {
   ChevronRight,
   Pencil,
 } from "lucide-react";
-
-type UpsellKind = "screens" | "tracks";
 
 const LAYOUT_MODE_STORAGE_KEY = "leaf:layoutMode:v1";
 
@@ -166,54 +175,6 @@ function recomputeQuoteRecord(q: QuoteRecord): QuoteRecord {
   };
 }
 
-type SalesTrackerStats = {
-  quotes: number;
-  sales: number;
-  upsells: number;
-  soldRevenueOneTime: number;
-  soldAnnualValue: number;
-};
-
-const SALES_TRACKER_STORAGE_KEY = "leaf:salesTracker:v1";
-const QUOTE_HISTORY_STORAGE_KEY = "leaf:quoteHistory:v1";
-
-function clampNonNegInt(n: unknown): number {
-  const num = typeof n === "number" ? n : Number(n);
-  if (!Number.isFinite(num)) return 0;
-  return Math.max(0, Math.floor(num));
-}
-
-function clampNonNegMoney(n: unknown): number {
-  const num = typeof n === "number" ? n : Number(n);
-  if (!Number.isFinite(num)) return 0;
-  return Math.max(0, Math.round(num));
-}
-
-function safeReadSalesStats(): SalesTrackerStats {
-  try {
-    const raw = localStorage.getItem(SALES_TRACKER_STORAGE_KEY);
-    if (!raw) return { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
-    const parsed = JSON.parse(raw) as Partial<SalesTrackerStats> | null;
-    return {
-      quotes: clampNonNegInt(parsed?.quotes),
-      sales: clampNonNegInt(parsed?.sales),
-      upsells: clampNonNegInt(parsed?.upsells),
-      soldRevenueOneTime: Number.isFinite(Number(parsed?.soldRevenueOneTime)) ? Number(parsed?.soldRevenueOneTime) : 0,
-      soldAnnualValue: Number.isFinite(Number(parsed?.soldAnnualValue)) ? Number(parsed?.soldAnnualValue) : 0,
-    };
-  } catch {
-    return { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
-  }
-}
-
-function safeWriteSalesStats(next: SalesTrackerStats) {
-  try {
-    localStorage.setItem(SALES_TRACKER_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore write failures (private mode / storage disabled)
-  }
-}
-
 // ── Mode config ──────────────────────────────────────────────────────────────
 
 type AppMode = "windows";
@@ -230,60 +191,9 @@ const MODE_CONFIG = [
   },
 ];
 
-type QuoteStatus = "quoted" | "sold" | "sold_upsell" | "lost";
-
 /** Quoted or already-sold rows: fix add-ons/plan in history after mistakes. */
 function quoteAllowsHistoryAddonEdit(status: QuoteStatus): boolean {
   return status === "quoted" || status === "sold" || status === "sold_upsell";
-}
-
-type QuoteRecord = {
-  id: string;
-  createdAt: number;
-  panes: number;
-  frenchPanes: number;
-  frenchEquivalent: number;
-  totalPanesForTier: number;
-  /** Saved tier boundary for upsell pricing + history */
-  tierMaxPanes?: number;
-  isCustom?: boolean;
-  tierLabel: string;
-  oneTimeSubtotal: number;
-  alreadyOut: number;
-  services: ServiceKey[];
-  planType: ServicePlanType;
-  planBundle: "exterior" | "exterior+interior";
-  planPerVisit: number | null;
-  planAnnualValue: number | null;
-  status: QuoteStatus;
-  /** Logged add-on flags for screen pricing context */
-  quotedScreenSpecial?: boolean;
-  quotedOnSiteScreenUpsell?: boolean;
-  /** Set when status is sold_upsell */
-  upsellKinds?: UpsellKind[];
-  /** Human-readable plan at log time */
-  planSummary?: string;
-  /** Human-readable add-ons / upsells at log time */
-  addonsSummary?: string;
-};
-
-function safeReadQuoteHistory(): QuoteRecord[] {
-  try {
-    const raw = localStorage.getItem(QUOTE_HISTORY_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as QuoteRecord[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function safeWriteQuoteHistory(next: QuoteRecord[]) {
-  try {
-    localStorage.setItem(QUOTE_HISTORY_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
 }
 
 const SERVICE_CONFIG: {
@@ -353,18 +263,14 @@ const PLAN_PERKS_LIST = [
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function Home() {
+  const { enabled: supabaseEnabled, ready: supabaseReady, userId, authError } = useSupabaseSession();
+
   const [appMode, setAppMode] = useState<AppMode>("windows");
   const modeConfig = MODE_CONFIG.find((m) => m.key === appMode)!;
 
   const [copied, setCopied] = useState(false);
-  const [salesStats, setSalesStats] = useState<SalesTrackerStats>(() => ({
-    quotes: 0,
-    sales: 0,
-    upsells: 0,
-    soldRevenueOneTime: 0,
-    soldAnnualValue: 0,
-  }));
-  const [quoteHistory, setQuoteHistory] = useState<QuoteRecord[]>([]);
+  const [salesStats, setSalesStats] = useState<SalesTrackerStats>(() => readLocalSalesStats());
+  const [quoteHistory, setQuoteHistory] = useState<QuoteRecord[]>(() => readLocalQuoteHistory());
   const [activeQuoteId, setActiveQuoteId] = useState<string | null>(null);
 
   const [layoutMode, setLayoutMode] = useState<"scroll" | "pages">(() => {
@@ -403,10 +309,56 @@ export default function Home() {
   const [totalPulse, setTotalPulse] = useState(false);
   const prevTotalRef = useRef(0);
 
+  /** After first cloud pull (or immediately when Supabase is off), allow pushes so we do not overwrite server with stale local. */
+  const [cloudHydrationDone, setCloudHydrationDone] = useState(false);
+
   useEffect(() => {
-    setSalesStats(safeReadSalesStats());
-    setQuoteHistory(safeReadQuoteHistory());
-  }, []);
+    if (!supabaseEnabled) {
+      setCloudHydrationDone(true);
+      return;
+    }
+    setCloudHydrationDone(false);
+  }, [supabaseEnabled]);
+
+  useEffect(() => {
+    if (!supabaseEnabled || !supabaseReady) return;
+    if (!userId) {
+      setCloudHydrationDone(true);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const row = await fetchUserAppDataRow(userId);
+        if (cancelled) return;
+        const merged = mergeRemoteAndLocal(row, readLocalSalesStats(), readLocalQuoteHistory());
+        setSalesStats(merged.salesStats);
+        setQuoteHistory(merged.quoteHistory);
+      } catch (e) {
+        console.error("[Leaf] Supabase hydrate failed", e);
+      } finally {
+        if (!cancelled) setCloudHydrationDone(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabaseEnabled, supabaseReady, userId]);
+
+  useEffect(() => {
+    writeLocalSalesStats(salesStats);
+    writeLocalQuoteHistory(quoteHistory);
+  }, [salesStats, quoteHistory]);
+
+  useEffect(() => {
+    if (!supabaseEnabled || !supabaseReady || !userId || !cloudHydrationDone) return;
+    const t = window.setTimeout(() => {
+      void upsertUserAppData(userId, salesStats, quoteHistory).catch((e) => {
+        console.error("[Leaf] Supabase sync failed", e);
+      });
+    }, 750);
+    return () => window.clearTimeout(t);
+  }, [salesStats, quoteHistory, supabaseEnabled, supabaseReady, userId, cloudHydrationDone]);
 
   useEffect(() => {
     try {
@@ -501,7 +453,6 @@ export default function Home() {
       soldAnnualValue: 0,
     };
     setSalesStats(clearedStats);
-    safeWriteSalesStats(clearedStats);
   };
 
   const toggleService = useCallback((key: ServiceKey) => {
@@ -571,13 +522,11 @@ export default function Home() {
     if (!snap) return;
     setQuoteHistory((prev) => {
       const next = [snap, ...prev].slice(0, 200);
-      safeWriteQuoteHistory(next);
       return next;
     });
     setActiveQuoteId(snap.id);
     setSalesStats((prev) => {
       const next = { ...prev, quotes: prev.quotes + 1 };
-      safeWriteSalesStats(next);
       return next;
     });
   }, [buildQuoteSnapshot]);
@@ -616,7 +565,6 @@ export default function Home() {
               }
             : x
         );
-        safeWriteQuoteHistory(next);
         return next;
       });
 
@@ -628,7 +576,6 @@ export default function Home() {
           soldRevenueOneTime: prev.soldRevenueOneTime + oneTimeRevenueAdd,
           soldAnnualValue: prev.soldAnnualValue + soldAnnual,
         };
-        safeWriteSalesStats(next);
         return next;
       });
     },
@@ -689,7 +636,6 @@ export default function Home() {
     const saved = recomputeQuoteRecord(editDraft);
     setQuoteHistory((prev) => {
       const next = prev.map((x) => (x.id === saved.id ? saved : x));
-      safeWriteQuoteHistory(next);
       return next;
     });
     setEditQuoteOpen(false);
@@ -713,7 +659,6 @@ export default function Home() {
       soldAnnualValue: clampNonNegMoney(statsAdjustDraft.soldAnnualValue),
     };
     setSalesStats(next);
-    safeWriteSalesStats(next);
     setStatsAdjustOpen(false);
     setStatsAdjustDraft(null);
   }, [statsAdjustDraft]);
@@ -1438,7 +1383,6 @@ export default function Home() {
                 onClick={() => {
                   const next = { quotes: 0, sales: 0, upsells: 0, soldRevenueOneTime: 0, soldAnnualValue: 0 };
                   setSalesStats(next);
-                  safeWriteSalesStats(next);
                 }}
                 className="text-xs font-semibold text-muted-foreground hover:text-foreground"
               >
@@ -1446,6 +1390,26 @@ export default function Home() {
               </button>
             </div>
           </div>
+
+          {authError && (
+            <div className="px-4 py-2 border-b border-border bg-destructive/10">
+              <p className="text-[11px] text-destructive font-medium">
+                Cloud backup unavailable: {authError}
+              </p>
+            </div>
+          )}
+          {supabaseEnabled && !authError && supabaseReady && !cloudHydrationDone && (
+            <div className="px-4 py-2 border-b border-border bg-secondary/40">
+              <p className="text-[11px] text-muted-foreground">Loading saved data from cloud…</p>
+            </div>
+          )}
+          {supabaseEnabled && !authError && supabaseReady && cloudHydrationDone && (
+            <div className="px-4 py-2 border-b border-border bg-emerald-50/60">
+              <p className="text-[11px] text-emerald-950">
+                Cloud backup on — quote history and sales tracker sync to your Supabase project.
+              </p>
+            </div>
+          )}
 
           <div className="p-4 space-y-3">
             {activeQuoteTarget && (
@@ -1547,7 +1511,6 @@ export default function Home() {
               type="button"
               onClick={() => {
                 setQuoteHistory([]);
-                safeWriteQuoteHistory([]);
                 setActiveQuoteId(null);
               }}
               className="ml-auto text-xs font-semibold text-muted-foreground hover:text-foreground"

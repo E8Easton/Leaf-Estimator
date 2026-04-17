@@ -1,5 +1,6 @@
 # Netlify static deploy (Vite SPA — no Node server required)
 # Dashboard: set repo root, leave build/publish blank if this file is present.
+# Optional cloud backup: Site settings → Environment variables → add VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
 
 [build]
   command = "pnpm run build:netlify"
