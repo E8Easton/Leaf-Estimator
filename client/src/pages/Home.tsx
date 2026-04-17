@@ -7,6 +7,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   PANE_TIERS,
+  getTierForPanes,
   SERVICE_PLAN_LABELS,
   SERVICE_PLAN_DESCRIPTIONS,
   SERVICE_PLAN_PERKS,
@@ -15,6 +16,7 @@ import {
   frenchPanesToStandard,
   calculateEstimate,
   formatCurrency,
+  type PaneTier,
   type ServiceKey,
   type ServicePlanType,
 } from "@/lib/pricing";
@@ -35,7 +37,60 @@ import {
   X,
   Copy,
   Check,
+  LayoutList,
+  SquareStack,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
+
+type UpsellKind = "screens" | "tracks";
+
+const LAYOUT_MODE_STORAGE_KEY = "leaf:layoutMode:v1";
+
+function findTierByMaxPanes(maxPanes: number): PaneTier | null {
+  if (!maxPanes || maxPanes < 0) return null;
+  return PANE_TIERS.find((t) => t.maxPanes === maxPanes) ?? null;
+}
+
+function resolveTierForQuote(q: QuoteRecord): PaneTier | null {
+  if (q.isCustom) return null;
+  const bySaved = findTierByMaxPanes(q.tierMaxPanes ?? 0);
+  if (bySaved) return bySaved;
+  return getTierForPanes(q.totalPanesForTier);
+}
+
+function getUpsellLinePrice(
+  q: QuoteRecord,
+  kind: UpsellKind,
+  screenOpts: { onSite: boolean; special: boolean }
+): number {
+  if (kind === "screens" && screenOpts.onSite) return 60;
+  if (q.isCustom) {
+    if (kind === "screens") return Math.round(q.totalPanesForTier * 2.5);
+    return Math.round(q.totalPanesForTier * 4);
+  }
+  const tier = resolveTierForQuote(q);
+  if (!tier) return 0;
+  if (kind === "tracks") return tier.tracks;
+  const onSite = !!screenOpts.onSite;
+  const hasSpecial = !!screenOpts.special && tier.screenSpecial !== null;
+  if (onSite) return 60;
+  if (hasSpecial) return tier.screenSpecial!;
+  return tier.screens;
+}
+
+function incrementalUpsellTotal(
+  q: QuoteRecord,
+  kinds: UpsellKind[],
+  screenOpts: { onSite: boolean; special: boolean }
+): number {
+  let sum = 0;
+  for (const k of kinds) {
+    if (q.services.includes(k)) continue;
+    sum += getUpsellLinePrice(q, k, screenOpts);
+  }
+  return sum;
+}
 
 type SalesTrackerStats = {
   quotes: number;
@@ -104,6 +159,9 @@ type QuoteRecord = {
   frenchPanes: number;
   frenchEquivalent: number;
   totalPanesForTier: number;
+  /** Saved tier boundary for upsell pricing + history */
+  tierMaxPanes?: number;
+  isCustom?: boolean;
   tierLabel: string;
   oneTimeSubtotal: number;
   alreadyOut: number;
@@ -113,6 +171,11 @@ type QuoteRecord = {
   planPerVisit: number | null;
   planAnnualValue: number | null;
   status: QuoteStatus;
+  /** Logged add-on flags for screen pricing context */
+  quotedScreenSpecial?: boolean;
+  quotedOnSiteScreenUpsell?: boolean;
+  /** Set when status is sold_upsell */
+  upsellKinds?: UpsellKind[];
 };
 
 function safeReadQuoteHistory(): QuoteRecord[] {
@@ -147,6 +210,43 @@ const SERVICE_CONFIG: {
   { key: "tracks", label: "Tracks", description: "Window track detailing", icon: <Wind size={20} />, color: "text-rose-500" },
 ];
 
+const BASE_SERVICE_CONFIG = SERVICE_CONFIG.filter((s) => s.key === "exterior" || s.key === "interior");
+const UPSELL_SERVICE_CONFIG = SERVICE_CONFIG.filter((s) => s.key === "screens" || s.key === "tracks");
+
+const PLAN_CARD_STYLES: Record<
+  ServicePlanType,
+  { selected: string; idle: string; badge: string; title: string }
+> = {
+  none: {
+    idle: "border-slate-200 bg-gradient-to-br from-slate-50 to-white hover:border-slate-300",
+    selected:
+      "border-slate-500 bg-gradient-to-br from-slate-100 via-white to-slate-50 shadow-md ring-2 ring-slate-300/40",
+    badge: "bg-slate-600 text-white",
+    title: "text-slate-800",
+  },
+  monthly: {
+    idle: "border-sky-200 bg-gradient-to-br from-sky-50/90 to-white hover:border-sky-300",
+    selected:
+      "border-sky-500 bg-gradient-to-br from-sky-400/30 via-sky-50 to-white shadow-md ring-2 ring-sky-400/50",
+    badge: "bg-sky-600 text-white",
+    title: "text-sky-900",
+  },
+  quarterly: {
+    idle: "border-violet-200 bg-gradient-to-br from-violet-50/90 to-white hover:border-violet-300",
+    selected:
+      "border-violet-500 bg-gradient-to-br from-violet-400/25 via-violet-50 to-white shadow-md ring-2 ring-violet-400/45",
+    badge: "bg-violet-600 text-white",
+    title: "text-violet-950",
+  },
+  biannual: {
+    idle: "border-amber-200 bg-gradient-to-br from-amber-50/90 to-white hover:border-amber-300",
+    selected:
+      "border-amber-500 bg-gradient-to-br from-amber-400/30 via-amber-50 to-white shadow-md ring-2 ring-amber-400/45",
+    badge: "bg-amber-600 text-white",
+    title: "text-amber-950",
+  },
+};
+
 const PLAN_PERKS_LIST = [
   { key: "leafRainblock" as const, label: "Leaf Rainblock Treatment" },
   { key: "rainGuarantee" as const, label: "7-Day Rain Guarantee" },
@@ -171,6 +271,21 @@ export default function Home() {
   const [quoteHistory, setQuoteHistory] = useState<QuoteRecord[]>([]);
   const [activeQuoteId, setActiveQuoteId] = useState<string | null>(null);
 
+  const [layoutMode, setLayoutMode] = useState<"scroll" | "pages">(() => {
+    try {
+      return localStorage.getItem(LAYOUT_MODE_STORAGE_KEY) === "pages" ? "pages" : "scroll";
+    } catch {
+      return "scroll";
+    }
+  });
+  const [pageIndex, setPageIndex] = useState(0);
+
+  const [upsellModalOpen, setUpsellModalOpen] = useState(false);
+  const [upsellModalKinds, setUpsellModalKinds] = useState<Set<UpsellKind>>(() => new Set());
+  const [upsellModalOnSite, setUpsellModalOnSite] = useState(false);
+  const [upsellModalSpecial, setUpsellModalSpecial] = useState(false);
+  const [upsellModalError, setUpsellModalError] = useState<string | null>(null);
+
   // Window cleaning state
   const [paneCount, setPaneCount] = useState(0);
   const [frenchPaneCount, setFrenchPaneCount] = useState(0);
@@ -190,6 +305,14 @@ export default function Home() {
     setSalesStats(safeReadSalesStats());
     setQuoteHistory(safeReadQuoteHistory());
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_MODE_STORAGE_KEY, layoutMode);
+    } catch {
+      // ignore
+    }
+  }, [layoutMode]);
 
   const isWindows = true;
 
@@ -234,7 +357,7 @@ export default function Home() {
 
   // Single-mode app (Windows). Keep this for future expansion.
 
-  const reset = () => {
+  const fullReset = () => {
     setPaneCount(0);
     setFrenchPaneCount(0);
     setSelectedServices(new Set<ServiceKey>(["exterior"]));
@@ -243,6 +366,14 @@ export default function Home() {
     setPlanBundle("exterior");
     setServicePlan("none");
     setShowBreakdown(false);
+    setCopied(false);
+    setShowInfo(false);
+    setPageIndex(0);
+    setUpsellModalOpen(false);
+    setUpsellModalKinds(new Set());
+    setUpsellModalOnSite(false);
+    setUpsellModalSpecial(false);
+    setUpsellModalError(null);
   };
 
   const toggleService = useCallback((key: ServiceKey) => {
@@ -299,6 +430,8 @@ export default function Home() {
       frenchPanes: frenchPaneCount,
       frenchEquivalent,
       totalPanesForTier: totalPanes,
+      tierMaxPanes: oneTimeEstimate.tier?.maxPanes ?? 0,
+      isCustom: oneTimeEstimate.isCustom,
       tierLabel,
       oneTimeSubtotal: calledOutPrice,
       alreadyOut: alreadyOutPrice,
@@ -308,6 +441,8 @@ export default function Home() {
       planPerVisit: servicePlan === "none" ? null : planEstimate.total,
       planAnnualValue: servicePlan === "none" ? null : planEstimate.annualValue,
       status: "quoted",
+      quotedScreenSpecial: useScreenSpecial,
+      quotedOnSiteScreenUpsell: useOnSiteScreenUpsell,
     };
   }, [
     alreadyOutPrice,
@@ -322,6 +457,9 @@ export default function Home() {
     servicePlan,
     totalPanes,
     oneTimeEstimate.tier,
+    oneTimeEstimate.isCustom,
+    useScreenSpecial,
+    useOnSiteScreenUpsell,
   ]);
 
   const logQuote = useCallback(() => {
@@ -340,37 +478,85 @@ export default function Home() {
     });
   }, [buildQuoteSnapshot]);
 
-  const markSale = useCallback((opts: { upsell: boolean }) => {
-    const id = activeQuoteId ?? quoteHistory[0]?.id ?? null;
-    if (!id) return;
-    const q = quoteHistory.find((x) => x.id === id);
-    if (!q) return;
+  const applyMarkSale = useCallback(
+    (opts: {
+      upsell: boolean;
+      kinds?: UpsellKind[];
+      screenOpts?: { onSite: boolean; special: boolean };
+    }) => {
+      const id = activeQuoteId ?? quoteHistory[0]?.id ?? null;
+      if (!id) return;
+      const q = quoteHistory.find((x) => x.id === id);
+      if (!q) return;
 
-    const soldOneTime = q.planType === "none" ? q.oneTimeSubtotal : 0;
-    const soldAnnual = q.planType !== "none" ? (q.planAnnualValue ?? 0) : 0;
+      const soldAnnual = q.planType !== "none" ? (q.planAnnualValue ?? 0) : 0;
 
-    setQuoteHistory((prev) => {
-      const next = prev.map((x) =>
-        x.id === id
-          ? { ...x, status: (opts.upsell ? "sold_upsell" : "sold") as QuoteStatus }
-          : x
-      );
-      safeWriteQuoteHistory(next);
-      return next;
+      const screenOpts = opts.screenOpts ?? { onSite: false, special: false };
+      const extra =
+        opts.upsell && opts.kinds && opts.kinds.length > 0
+          ? incrementalUpsellTotal(q, opts.kinds, screenOpts)
+          : 0;
+
+      const oneTimeRevenueAdd =
+        (q.planType === "none" ? q.oneTimeSubtotal : 0) + (opts.upsell ? extra : 0);
+
+      const upsellKindsFinal = opts.upsell && opts.kinds && opts.kinds.length > 0 ? opts.kinds : undefined;
+
+      setQuoteHistory((prev) => {
+        const next = prev.map((x) =>
+          x.id === id
+            ? {
+                ...x,
+                status: (opts.upsell ? "sold_upsell" : "sold") as QuoteStatus,
+                ...(upsellKindsFinal ? { upsellKinds: upsellKindsFinal } : {}),
+              }
+            : x
+        );
+        safeWriteQuoteHistory(next);
+        return next;
+      });
+
+      setSalesStats((prev) => {
+        const next = {
+          ...prev,
+          sales: prev.sales + 1,
+          upsells: prev.upsells + (opts.upsell ? 1 : 0),
+          soldRevenueOneTime: prev.soldRevenueOneTime + oneTimeRevenueAdd,
+          soldAnnualValue: prev.soldAnnualValue + soldAnnual,
+        };
+        safeWriteSalesStats(next);
+        return next;
+      });
+    },
+    [activeQuoteId, quoteHistory]
+  );
+
+  const activeQuoteTarget =
+    quoteHistory.find((x) => x.id === activeQuoteId) ?? quoteHistory[0] ?? null;
+
+  const openUpsellModal = useCallback(() => {
+    if (!activeQuoteTarget) return;
+    setUpsellModalError(null);
+    setUpsellModalOnSite(activeQuoteTarget.quotedOnSiteScreenUpsell ?? false);
+    setUpsellModalSpecial(activeQuoteTarget.quotedScreenSpecial ?? false);
+    setUpsellModalKinds(new Set());
+    setUpsellModalOpen(true);
+  }, [activeQuoteTarget]);
+
+  const confirmUpsellSale = useCallback(() => {
+    const kinds = Array.from(upsellModalKinds);
+    if (kinds.length === 0) {
+      setUpsellModalError("Choose Screens and/or Tracks before confirming.");
+      return;
+    }
+    setUpsellModalError(null);
+    applyMarkSale({
+      upsell: true,
+      kinds,
+      screenOpts: { onSite: upsellModalOnSite, special: upsellModalSpecial },
     });
-
-    setSalesStats((prev) => {
-      const next = {
-        ...prev,
-        sales: prev.sales + 1,
-        upsells: prev.upsells + (opts.upsell ? 1 : 0),
-        soldRevenueOneTime: prev.soldRevenueOneTime + soldOneTime,
-        soldAnnualValue: prev.soldAnnualValue + soldAnnual,
-      };
-      safeWriteSalesStats(next);
-      return next;
-    });
-  }, [activeQuoteId, quoteHistory]);
+    setUpsellModalOpen(false);
+  }, [applyMarkSale, upsellModalKinds, upsellModalOnSite, upsellModalSpecial]);
 
   const handleCopyQuote = () => {
     const modeLabel = MODE_CONFIG.find((m) => m.key === appMode)?.label ?? appMode;
@@ -430,8 +616,11 @@ export default function Home() {
   const incrementBy = (n: number) => setPaneCount((c) => Math.min(c + n, 200));
   const decrementBy = (n: number) => setPaneCount((c) => Math.max(c - n, 0));
 
+  const showPage = (n: number) => layoutMode === "scroll" || pageIndex === n;
+  const PAGE_LAST = 3;
+
   return (
-    <div className="min-h-screen bg-background pb-10">
+    <div className={`min-h-screen bg-background ${layoutMode === "pages" ? "pb-28" : "pb-10"}`}>
 
       {/* ── Sticky Header ── */}
       <div
@@ -451,16 +640,22 @@ export default function Home() {
               <p className="text-sm font-bold text-white leading-tight font-display">Estimator</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <button
               type="button"
-              onClick={reset}
-              className="h-9 px-3 rounded-xl border border-white/15 flex items-center gap-2 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-semibold"
+              title={layoutMode === "scroll" ? "Switch to step-by-step pages" : "Show full scroll layout"}
+              onClick={() => {
+                setLayoutMode((m) => (m === "scroll" ? "pages" : "scroll"));
+                setPageIndex(0);
+              }}
+              className="h-9 px-2.5 rounded-xl border border-white/15 flex items-center gap-1.5 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-xs font-semibold"
             >
-              Next
+              {layoutMode === "scroll" ? <LayoutList size={15} /> : <SquareStack size={15} />}
+              <span className="hidden min-[380px]:inline">{layoutMode === "scroll" ? "Scroll" : "Steps"}</span>
             </button>
             <button
-              onClick={reset}
+              type="button"
+              onClick={fullReset}
               className="h-9 px-3 rounded-xl border border-white/15 flex items-center gap-2 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-semibold"
             >
               <RefreshCw size={14} />
@@ -493,6 +688,8 @@ export default function Home() {
         ══════════════════════════════════════════ */}
         {appMode === "windows" && (
           <>
+            {showPage(0) && (
+            <>
             {/* Step 1: Pane Count */}
             <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
               <div className="px-4 pt-4 pb-3 border-b border-border flex items-center justify-between">
@@ -613,15 +810,13 @@ export default function Home() {
                     <div className="mt-3 rounded-xl bg-white/70 border border-primary/15 px-3 py-2 text-center">
                       <p className="text-[11px] text-muted-foreground font-semibold">French equiv.</p>
                       <p className="text-lg font-extrabold text-primary font-display">{frenchEquivalent} panes</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Total panes for tier: <strong>{totalPanes}</strong>
-                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Added toward your total below.</p>
                     </div>
                   )}
                 </div>
               </div>
 
-              {paneCount > 0 && (
+              {totalPanes > 0 && (
                 <div className="px-4 pb-4">
                   <div className="rounded-xl bg-accent px-3 py-2 flex items-center justify-between">
                     <div>
@@ -652,15 +847,37 @@ export default function Home() {
                       ))}
                     </div>
                   </div>
+                  <div className="mt-4 rounded-2xl border-2 border-primary/35 bg-gradient-to-br from-primary/12 via-white to-sky-50/40 px-4 py-4 text-center shadow-sm">
+                    <p className="text-[11px] font-extrabold uppercase tracking-wide text-primary font-display">
+                      Total panes for pricing
+                    </p>
+                    <p className="text-5xl font-black text-primary font-display leading-none mt-1">{totalPanes}</p>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      {paneCount} standard
+                      {frenchPaneCount > 0 ? (
+                        <span>
+                          {" "}
+                          · {frenchEquivalent} equiv. from {frenchPaneCount} French
+                        </span>
+                      ) : null}
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
+            </>
+            )}
 
+            {showPage(1) && (
+            <>
             {/* Step 2: Services */}
             <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
               <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
                 <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>2</span>
-                <h2 className="font-bold text-foreground font-display">Select Services</h2>
+                <div>
+                  <h2 className="font-bold text-foreground font-display">Select Services</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Start with exterior / interior — screens & tracks are add-ons below.</p>
+                </div>
               </div>
 
               {/* Quick presets for faster quoting */}
@@ -695,13 +912,9 @@ export default function Home() {
               </div>
 
               <div className="p-4 grid grid-cols-2 gap-3">
-                {SERVICE_CONFIG.map((svc) => {
+                {BASE_SERVICE_CONFIG.map((svc) => {
                   const isSelected = selectedServices.has(svc.key);
-                  const price = tier
-                    ? svc.key === "screens" && useScreenSpecial && tier.screenSpecial !== null
-                      ? tier.screenSpecial
-                      : (tier[svc.key as keyof typeof tier] as number)
-                    : null;
+                  const price = tier ? (tier[svc.key as keyof typeof tier] as number) : null;
                   const isUnavailable =
                     tier !== null &&
                     svc.key !== "exterior" &&
@@ -736,8 +949,60 @@ export default function Home() {
                   );
                 })}
               </div>
+            </div>
 
-              {/* On-site upsell: screens for $60 when already there */}
+            <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden mt-4">
+              <div className="px-4 pt-4 pb-3 border-b border-border">
+                <h3 className="font-bold text-foreground font-display text-sm">Add-ons (screens & tracks)</h3>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Optional upsells — same prices apply when you use <strong>Mark Sale + Upsell</strong> below.
+                </p>
+              </div>
+              <div className="p-4 grid grid-cols-2 gap-3">
+                {UPSELL_SERVICE_CONFIG.map((svc) => {
+                  const isSelected = selectedServices.has(svc.key);
+                  const price = tier
+                    ? svc.key === "screens" && useScreenSpecial && tier.screenSpecial !== null
+                      ? tier.screenSpecial
+                      : (tier[svc.key as keyof typeof tier] as number)
+                    : oneTimeEstimate.isCustom                      ? svc.key === "screens"
+                        ? Math.round(totalPanes * 2.5)
+                        : Math.round(totalPanes * 4)
+                      : null;
+                  const isUnavailable =
+                    tier !== null &&
+                    (tier[svc.key as keyof typeof tier] as number) === 0;
+
+                  return (
+                    <button
+                      key={svc.key}
+                      onClick={() => !isUnavailable && toggleService(svc.key)}
+                      disabled={isUnavailable}
+                      className={`service-card relative rounded-2xl border-2 p-4 text-left transition-all duration-200 active:scale-[0.97] ${
+                        isSelected && !isUnavailable
+                          ? "border-amber-500/80 bg-amber-50/80"
+                          : isUnavailable
+                          ? "border-border bg-secondary/50 opacity-50 cursor-not-allowed"
+                          : "border-border bg-white hover:border-amber-400/50 hover:bg-amber-50/40"
+                      }`}
+                    >
+                      <div className={`mb-2 ${isSelected ? "text-amber-600" : svc.color}`}>{svc.icon}</div>
+                      <p className={`font-bold text-sm font-display ${isSelected ? "text-amber-800" : "text-foreground"}`}>{svc.label}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{svc.description}</p>
+                      {price !== null && price > 0 && !isUnavailable && (
+                        <p className={`text-sm font-bold mt-2 font-display ${isSelected ? "text-amber-700" : "text-muted-foreground"}`}>
+                          {formatCurrency(price)}
+                        </p>
+                      )}
+                      {isUnavailable && <p className="text-xs text-muted-foreground mt-2">Custom quote</p>}
+                      {isSelected && !isUnavailable && (
+                        <div className="absolute top-2 right-2 text-amber-600"><CheckCircle2 size={16} /></div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
               {selectedServices.has("screens") && appMode === "windows" && !oneTimeEstimate.isCustom && (
                 <div className="px-4 pb-2">
                   <button
@@ -763,7 +1028,7 @@ export default function Home() {
                 </div>
               )}
 
-              {hasScreenSpecial && tier?.screenSpecial !== null && (
+              {hasScreenSpecial && tier?.screenSpecial !== null && selectedServices.has("screens") && (
                 <div className="px-4 pb-4">
                   <button
                     onClick={() => setUseScreenSpecial(!useScreenSpecial)}
@@ -789,6 +1054,8 @@ export default function Home() {
               )}
             </div>
           </>
+          )}
+          </>
         )}
 
         {/* ══════════════════════════════════════════
@@ -799,7 +1066,8 @@ export default function Home() {
         {/* ══════════════════════════════════════════
             SERVICE PLAN (Windows only)
         ══════════════════════════════════════════ */}
-        {appMode === "windows" && <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+        {appMode === "windows" && showPage(2) && (
+        <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
           <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
             <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>
               3
@@ -841,27 +1109,32 @@ export default function Home() {
             {(["none", "monthly", "quarterly", "biannual"] as ServicePlanType[]).map((plan) => {
               const isSelected = servicePlan === plan;
               const discount = SERVICE_PLAN_DISCOUNTS[plan];
+              const ps = PLAN_CARD_STYLES[plan];
               return (
                 <button
                   key={plan}
                   onClick={() => setServicePlan(plan)}
                   className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between transition-all duration-200 active:scale-[0.98] ${
-                    isSelected ? "border-primary bg-accent" : "border-border bg-white hover:border-primary/40"
+                    isSelected ? ps.selected : ps.idle
                   }`}
                 >
                   <div className="text-left">
-                    <p className={`font-bold text-sm font-display ${isSelected ? "text-primary" : "text-foreground"}`}>
+                    <p className={`font-bold text-sm font-display ${isSelected ? ps.title : "text-foreground"}`}>
                       {SERVICE_PLAN_LABELS[plan]}
                     </p>
                     <p className="text-xs text-muted-foreground mt-0.5">{SERVICE_PLAN_DESCRIPTIONS[plan]}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {discount > 0 && (
-                      <span className={`text-xs font-bold font-display px-1.5 py-0.5 rounded-lg ${isSelected ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                      <span className={`text-xs font-bold font-display px-1.5 py-0.5 rounded-lg ${isSelected ? ps.badge : "bg-secondary text-muted-foreground"}`}>
                         −${discount}
                       </span>
                     )}
-                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${isSelected ? "border-primary bg-primary" : "border-border"}`}>
+                    <div
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                        isSelected ? "border-white/90 bg-white/20" : "border-border bg-white/50"
+                      }`}
+                    >
                       {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
                     </div>
                   </div>
@@ -902,12 +1175,13 @@ export default function Home() {
               </div>
             </div>
           )}
-        </div>}
+        </div>
+        )}
 
         {/* ══════════════════════════════════════════
             QUOTE SUMMARY
         ══════════════════════════════════════════ */}
-        {hasAnyTotal && calledOutPrice > 0 && (
+        {showPage(2) && hasAnyTotal && calledOutPrice > 0 && (
           <div className="bg-white rounded-2xl border-2 border-primary shadow-md overflow-hidden">
             <div className="px-4 pt-4 pb-3 border-b border-primary/20 flex items-center gap-2">
               <ClipboardList size={18} className="text-primary" />
@@ -1014,6 +1288,8 @@ export default function Home() {
         {/* ══════════════════════════════════════════
             SALES TRACKER
         ══════════════════════════════════════════ */}
+        {showPage(3) && (
+        <>
         <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
           <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
             <CheckCircle2 size={18} className="text-primary" />
@@ -1032,6 +1308,19 @@ export default function Home() {
           </div>
 
           <div className="p-4 space-y-3">
+            {activeQuoteTarget && (
+              <div className="rounded-xl border-2 border-primary/25 bg-accent/50 px-3 py-3">
+                <p className="text-[11px] font-bold text-primary uppercase tracking-wide font-display">Active quote</p>
+                <p className="text-sm font-extrabold text-foreground font-display mt-1">
+                  {activeQuoteTarget.totalPanesForTier} panes · {activeQuoteTarget.tierLabel}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {activeQuoteTarget.planType === "none"
+                    ? formatCurrency(activeQuoteTarget.oneTimeSubtotal)
+                    : `${formatCurrency(activeQuoteTarget.planPerVisit ?? 0)}/visit · ${SERVICE_PLAN_LABELS[activeQuoteTarget.planType]}`}
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-3 gap-2">
               <div className="rounded-xl bg-secondary px-3 py-3 text-center">
                 <p className="text-[11px] text-muted-foreground font-semibold">Quotes</p>
@@ -1076,21 +1365,23 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => markSale({ upsell: false })}
-                  className="h-11 rounded-xl border-2 border-primary bg-white text-primary font-bold font-display active:scale-95 transition-all"
+                  disabled={!activeQuoteTarget}
+                  onClick={() => applyMarkSale({ upsell: false })}
+                  className="h-11 rounded-xl border-2 border-primary bg-white text-primary font-bold font-display active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
                 >
                   Mark Sale
                 </button>
               </div>
               <button
                 type="button"
-                onClick={() => markSale({ upsell: true })}
-                className="mt-2 w-full h-11 rounded-xl bg-foreground text-white font-bold font-display active:scale-95 transition-all"
+                disabled={!activeQuoteTarget}
+                onClick={openUpsellModal}
+                className="mt-2 w-full h-11 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 text-white font-bold font-display active:scale-95 transition-all shadow-md disabled:opacity-40 disabled:pointer-events-none"
               >
-                Mark Sale + Upsell
+                Mark Sale + Upsell…
               </button>
               <p className="mt-2 text-[11px] text-muted-foreground">
-                Tip: tap a saved quote below to make it “active”, then mark it sold.
+                Tip: tap a saved quote below to make it “active”, then mark it sold. Upsell opens a picker for screens / tracks.
               </p>
             </div>
 
@@ -1137,8 +1428,16 @@ export default function Home() {
                 const time = new Date(q.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
                 const primary = q.planType === "none" ? formatCurrency(q.oneTimeSubtotal) : `${formatCurrency(q.planPerVisit ?? 0)}/visit`;
                 const secondary = q.planType === "none" ? "One-time" : `${SERVICE_PLAN_LABELS[q.planType]} (${q.planBundle === "exterior" ? "Exterior" : "Ext + Int"})`;
+                const upsellNote =
+                  q.status === "sold_upsell" && q.upsellKinds?.length
+                    ? ` (${q.upsellKinds.map((k) => (k === "screens" ? "Screens" : "Tracks")).join(", ")})`
+                    : "";
                 const status =
-                  q.status === "sold_upsell" ? "Sold + Upsell" : q.status === "sold" ? "Sold" : "Quoted";
+                  q.status === "sold_upsell"
+                    ? `Sold + Upsell${upsellNote}`
+                    : q.status === "sold"
+                      ? "Sold"
+                      : "Quoted";
                 return (
                   <button
                     key={q.id}
@@ -1174,12 +1473,169 @@ export default function Home() {
             )}
           </div>
         </div>
+        </>
+        )}
 
         {/* Footer */}
         <p className="text-center text-xs text-muted-foreground pb-2">
           Leaf Cleaning · Spotless Views. Every Time.
         </p>
       </div>
+
+      {layoutMode === "pages" && (
+        <div
+          className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-card/95 backdrop-blur-md px-4 py-3"
+          style={{ paddingBottom: "max(12px, env(safe-area-inset-bottom))" }}
+        >
+          <div className="max-w-[480px] mx-auto flex items-center justify-between gap-3">
+            <button
+              type="button"
+              disabled={pageIndex <= 0}
+              onClick={() => setPageIndex((i) => Math.max(0, i - 1))}
+              className="h-11 px-3 rounded-xl border border-border bg-white font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
+            >
+              <ChevronLeft size={18} />
+              Back
+            </button>
+            <p className="text-xs font-bold text-muted-foreground font-display text-center flex-1">
+              Step {pageIndex + 1} / {PAGE_LAST + 1}
+            </p>
+            <button
+              type="button"
+              disabled={pageIndex >= PAGE_LAST}
+              onClick={() => setPageIndex((i) => Math.min(PAGE_LAST, i + 1))}
+              className="h-11 px-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
+            >
+              Next
+              <ChevronRight size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {upsellModalOpen && activeQuoteTarget && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 bg-black/50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="upsell-modal-title"
+        >
+          <div className="w-full max-w-[400px] rounded-2xl bg-white shadow-2xl border border-border overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="px-4 pt-4 pb-3 border-b border-border bg-gradient-to-r from-amber-50 to-rose-50">
+              <h3 id="upsell-modal-title" className="text-lg font-extrabold text-foreground font-display">
+                Mark sale + upsell
+              </h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Choose what was upsold on this job. Extra revenue counts only for add-ons <strong>not</strong> already in the logged quote.
+              </p>
+            </div>
+            <div className="p-4 space-y-3">
+              {(["screens", "tracks"] as UpsellKind[]).map((kind) => {
+                const label = kind === "screens" ? "Screens" : "Tracks";
+                const inQuote = activeQuoteTarget.services.includes(kind);
+                const price = getUpsellLinePrice(activeQuoteTarget, kind, {
+                  onSite: upsellModalOnSite,
+                  special: upsellModalSpecial,
+                });
+                const checked = upsellModalKinds.has(kind);
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => {
+                      setUpsellModalKinds((prev) => {
+                        const n = new Set(prev);
+                        if (n.has(kind)) n.delete(kind);
+                        else n.add(kind);
+                        return n;
+                      });
+                      setUpsellModalError(null);
+                    }}
+                    className={`w-full rounded-xl border-2 px-4 py-3 flex items-center justify-between text-left transition-all ${
+                      checked ? "border-amber-500 bg-amber-50" : "border-border bg-secondary/40 hover:bg-secondary"
+                    }`}
+                  >
+                    <div>
+                      <p className="font-bold font-display text-foreground">{label}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {inQuote ? "Already in logged quote — won’t double-count revenue" : `Adds ${formatCurrency(price)} if selected`}
+                      </p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="text-lg font-extrabold font-display text-amber-700">{formatCurrency(price)}</p>
+                      {checked && <CheckCircle2 size={18} className="text-amber-600 inline-block mt-1" />}
+                    </div>
+                  </button>
+                );
+              })}
+
+              {upsellModalKinds.has("screens") && (
+                <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+                  <p className="text-xs font-bold text-amber-900 font-display">Screen pricing mode</p>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={upsellModalOnSite}
+                      onChange={() => {
+                        setUpsellModalOnSite((v) => {
+                          const next = !v;
+                          if (next) setUpsellModalSpecial(false);
+                          return next;
+                        });
+                      }}
+                      className="rounded border-border"
+                    />
+                    On-site upsell ($60)
+                  </label>
+                  {!activeQuoteTarget.isCustom && resolveTierForQuote(activeQuoteTarget)?.screenSpecial != null && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={upsellModalSpecial}
+                        disabled={upsellModalOnSite}
+                        onChange={() => setUpsellModalSpecial((v) => !v)}
+                        className="rounded border-border"
+                      />
+                      $25 screen special (tier)
+                    </label>
+                  )}
+                </div>
+              )}
+
+              {upsellModalError && <p className="text-sm text-destructive font-medium">{upsellModalError}</p>}
+
+              <p className="text-xs text-muted-foreground">
+                Extra from selections:{" "}
+                <strong>
+                  {formatCurrency(
+                    incrementalUpsellTotal(activeQuoteTarget, Array.from(upsellModalKinds), {
+                      onSite: upsellModalOnSite,
+                      special: upsellModalSpecial,
+                    })
+                  )}
+                </strong>
+              </p>
+
+              <div className="grid grid-cols-2 gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setUpsellModalOpen(false)}
+                  className="h-11 rounded-xl border-2 border-border font-bold font-display"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmUpsellSale}
+                  className="h-11 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 text-white font-bold font-display"
+                >
+                  Confirm sale
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
