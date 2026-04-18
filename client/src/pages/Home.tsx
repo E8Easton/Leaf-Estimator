@@ -744,7 +744,7 @@ export default function Home() {
     if (layoutMode !== "pages" || pageIndex !== step) return null;
     return (
       <div
-        className="mt-4 rounded-2xl border border-border bg-card px-3 py-3 shadow-sm"
+        className="leaf-step-nav"
         style={{ paddingBottom: "max(8px, env(safe-area-inset-bottom))" }}
       >
         <div className="flex items-center justify-between gap-3">
@@ -752,19 +752,19 @@ export default function Home() {
             type="button"
             disabled={pageIndex <= 0}
             onClick={() => setPageIndex((i) => Math.max(0, i - 1))}
-            className="h-11 px-3 rounded-xl border border-border bg-white font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
+            className="leaf-btn-ghost"
           >
             <ChevronLeft size={18} aria-hidden />
             Back
           </button>
-          <p className="text-xs font-bold text-muted-foreground font-display text-center flex-1 min-w-0">
+          <p className="text-xs font-bold text-muted-foreground font-display text-center flex-1 min-w-0 tracking-wide">
             Step {pageIndex + 1} / {PAGE_LAST + 1}
           </p>
           <button
             type="button"
             disabled={pageIndex >= PAGE_LAST}
             onClick={() => setPageIndex((i) => Math.min(PAGE_LAST, i + 1))}
-            className="h-11 px-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm font-display flex items-center gap-1 disabled:opacity-35"
+            className="leaf-btn-primary-solid"
           >
             Next
             <ChevronRight size={18} aria-hidden />
@@ -779,11 +779,11 @@ export default function Home() {
 
       {/* ── Sticky Header ── */}
       <div
-        className="sticky top-0 z-50 border-b border-white/10 shadow-sm"
+        className="sticky top-0 z-50 border-b border-white/[0.07] shadow-[0_10px_40px_-12px_rgba(0,0,0,0.45)] transition-[box-shadow,border-color] duration-500"
         style={{
-          background: "rgba(15, 27, 51, 0.92)",
-          backdropFilter: "blur(14px)",
-          WebkitBackdropFilter: "blur(14px)",
+          background: "rgba(15, 27, 51, 0.88)",
+          backdropFilter: "blur(18px) saturate(1.25)",
+          WebkitBackdropFilter: "blur(18px) saturate(1.25)",
           paddingTop: "env(safe-area-inset-top)",
         }}
       >
@@ -803,7 +803,7 @@ export default function Home() {
                 setLayoutMode((m) => (m === "scroll" ? "pages" : "scroll"));
                 setPageIndex(0);
               }}
-              className="h-9 px-2.5 rounded-xl border border-white/15 flex items-center gap-1.5 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-xs font-semibold"
+              className="h-9 px-2.5 rounded-xl border border-white/15 flex items-center gap-1.5 text-white/80 hover:text-white hover:bg-white/10 transition-all duration-300 ease-out text-xs font-semibold"
             >
               {layoutMode === "scroll" ? <LayoutList size={15} /> : <SquareStack size={15} />}
               <span className="hidden min-[380px]:inline">{layoutMode === "scroll" ? "Scroll" : "Steps"}</span>
@@ -811,12 +811,12 @@ export default function Home() {
             <button
               type="button"
               onClick={fullReset}
-              className="h-9 px-3 rounded-xl border border-white/15 flex items-center gap-2 text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-semibold"
+              className="h-9 px-3 rounded-xl border border-white/15 flex items-center gap-2 text-white/80 hover:text-white hover:bg-white/10 transition-all duration-300 ease-out text-sm font-semibold"
             >
               <RefreshCw size={14} />
               Reset
             </button>
-            <div className={`text-right transition-all duration-200 ${totalPulse ? "total-pulse" : ""}`}>
+            <div className={`text-right transition-all duration-300 ease-out ${totalPulse ? "total-pulse" : ""}`}>
               <p className="text-xs text-white/70 font-medium leading-none">
                 {calledOutPrice > 0
                   ? appMode === "windows" && servicePlan !== "none"
@@ -834,7 +834,7 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="max-w-[480px] mx-auto px-4 pt-5 space-y-4">
+      <div className="max-w-[480px] mx-auto px-4 pt-5 space-y-5">
 
         {/* Single mode: Windows */}
 
@@ -846,7 +846,7 @@ export default function Home() {
             {showPage(0) && (
             <>
             {/* Step 1: Pane Count */}
-            <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+            <div className="leaf-panel overflow-hidden">
               <div className="px-4 pt-4 pb-3 border-b border-border flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>1</span>
@@ -1027,7 +1027,7 @@ export default function Home() {
             {showPage(1) && (
             <>
             {/* Step 2: Services */}
-            <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+            <div className="leaf-panel overflow-hidden">
               <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
                 <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>2</span>
                 <div>
@@ -1060,7 +1060,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden mt-4">
+            <div className="leaf-panel overflow-hidden mt-4">
               <div className="px-4 pt-4 pb-3 border-b border-border">
                 <h3 className="font-bold text-foreground font-display text-sm">Add-ons (screens & tracks)</h3>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -1203,7 +1203,7 @@ export default function Home() {
             SERVICE PLAN (Windows only)
         ══════════════════════════════════════════ */}
         {appMode === "windows" && showPage(2) && (
-        <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+        <div className="leaf-panel overflow-hidden">
           <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
             <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center font-display ${modeConfig.stepColor}`}>
               3
@@ -1295,7 +1295,7 @@ export default function Home() {
             QUOTE SUMMARY
         ══════════════════════════════════════════ */}
         {showPage(2) && hasAnyTotal && calledOutPrice > 0 && (
-          <div className="bg-white rounded-2xl border-2 border-primary shadow-md overflow-hidden">
+          <div className="leaf-panel-highlight overflow-hidden">
             <div className="px-4 pt-4 pb-3 border-b border-primary/20 flex items-center gap-2">
               <ClipboardList size={18} className="text-primary" />
               <h2 className="font-bold text-foreground font-display">Quote Summary</h2>
@@ -1404,7 +1404,7 @@ export default function Home() {
         ══════════════════════════════════════════ */}
         {showPage(3) && (
         <>
-        <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+        <div className="leaf-panel overflow-hidden">
           <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
             <CheckCircle2 size={18} className="text-primary" />
             <h2 className="font-bold text-foreground font-display">Sales Tracker</h2>
@@ -1541,7 +1541,7 @@ export default function Home() {
         </div>
 
         {/* ── Quote History ── */}
-        <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+        <div className="leaf-panel overflow-hidden">
           <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
             <ClipboardList size={18} className="text-primary" />
             <h2 className="font-bold text-foreground font-display">Quote History</h2>
@@ -1671,7 +1671,7 @@ export default function Home() {
           aria-modal="true"
           aria-labelledby="sale-modal-title"
         >
-          <div className="w-full max-w-[400px] rounded-2xl bg-white shadow-2xl border border-border overflow-hidden max-h-[90vh] overflow-y-auto">
+          <div className="leaf-modal w-full max-w-[400px] overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="px-4 pt-4 pb-3 border-b border-border bg-gradient-to-r from-emerald-50 to-sky-50">
               <h3 id="sale-modal-title" className="text-lg font-extrabold text-foreground font-display">
                 Record sale
@@ -1835,7 +1835,7 @@ export default function Home() {
           aria-modal="true"
           aria-labelledby="edit-quote-modal-title"
         >
-          <div className="w-full max-w-[400px] rounded-2xl bg-white shadow-2xl border border-border overflow-hidden max-h-[90vh] overflow-y-auto">
+          <div className="leaf-modal w-full max-w-[400px] overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="px-4 pt-4 pb-3 border-b border-border bg-gradient-to-r from-violet-50 to-sky-50">
               <h3 id="edit-quote-modal-title" className="text-lg font-extrabold text-foreground font-display">
                 Edit quote
@@ -2025,7 +2025,7 @@ export default function Home() {
           aria-modal="true"
           aria-labelledby="stats-adjust-title"
         >
-          <div className="w-full max-w-[400px] rounded-2xl bg-white shadow-2xl border border-border overflow-hidden max-h-[90vh] overflow-y-auto">
+          <div className="leaf-modal w-full max-w-[400px] overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="px-4 pt-4 pb-3 border-b border-border bg-secondary/40">
               <h3 id="stats-adjust-title" className="text-lg font-extrabold text-foreground font-display">
                 Edit sales tracker

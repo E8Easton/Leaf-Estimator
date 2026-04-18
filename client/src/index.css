@@ -54,26 +54,26 @@
   --leaf-light: #EFF7FE;
   --leaf-light-alt: #E5F2FD;
 
-  /* Theme mapping */
-  --primary: oklch(0.73 0.12 235); /* ~ #4BAEE6 */
+  /* Theme mapping — smoother surfaces, softer borders */
+  --primary: oklch(0.72 0.11 235);
   --primary-foreground: oklch(0.99 0 0);
-  --radius: 0.9rem;
-  --background: oklch(0.97 0.01 235); /* ~ #EFF7FE */
-  --foreground: oklch(0.22 0.03 260); /* deep navy-ish text */
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.03 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0.03 260);
-  --secondary: oklch(0.95 0.01 235); /* light blue surface */
+  --radius: 1.05rem;
+  --background: oklch(0.965 0.012 235);
+  --foreground: oklch(0.24 0.028 260);
+  --card: oklch(0.998 0.002 235);
+  --card-foreground: oklch(0.24 0.028 260);
+  --popover: oklch(0.998 0.002 235);
+  --popover-foreground: oklch(0.24 0.028 260);
+  --secondary: oklch(0.955 0.012 235);
   --secondary-foreground: oklch(0.34 0.03 260);
-  --muted: oklch(0.95 0.01 235);
-  --muted-foreground: oklch(0.52 0.02 260);
-  --accent: oklch(0.94 0.03 235);
+  --muted: oklch(0.955 0.012 235);
+  --muted-foreground: oklch(0.5 0.022 260);
+  --accent: oklch(0.935 0.035 235);
   --accent-foreground: oklch(0.34 0.08 235);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.9 0.02 240);
-  --input: oklch(0.9 0.02 240);
+  --border: oklch(0.91 0.018 240);
+  --input: oklch(0.91 0.018 240);
   --ring: var(--primary);
   --chart-1: var(--primary);
   --chart-2: oklch(0.78 0.10 235);
@@ -94,10 +94,18 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    scroll-behavior: smooth;
+  }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background-color: var(--background);
     font-family: 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    background-image: radial-gradient(120% 70% at 50% -10%, oklch(0.93 0.04 235 / 0.45), transparent 52%),
+      radial-gradient(90% 50% at 100% 100%, oklch(0.94 0.03 235 / 0.35), transparent 45%);
   }
   html, body {
     height: 100%;
@@ -152,16 +160,16 @@
   /* Animated total counter */
   @keyframes totalPulse {
     0% { transform: scale(1); }
-    50% { transform: scale(1.04); }
+    55% { transform: scale(1.035); }
     100% { transform: scale(1); }
   }
   .total-pulse {
-    animation: totalPulse 0.25s ease-in-out;
+    animation: totalPulse 0.38s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   /* Service card toggle */
   .service-card {
-    @apply transition-all duration-200 ease-in-out;
+    @apply transition-all duration-300 ease-out;
   }
   .service-card.selected {
     @apply border-primary bg-accent;
@@ -169,6 +177,44 @@
 
   /* Pane counter button */
   .pane-btn {
-    @apply w-14 h-14 rounded-2xl flex items-center justify-center text-2xl font-bold transition-all duration-150 active:scale-95 select-none;
+    @apply w-14 h-14 rounded-2xl flex items-center justify-center text-2xl font-bold select-none;
+    @apply transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-[0.96];
+  }
+
+  /* Main content cards — soft lift, smooth shadow */
+  .leaf-panel {
+    @apply rounded-2xl border border-border/75 bg-card;
+    box-shadow: 0 1px 2px rgba(15, 27, 51, 0.035), 0 14px 40px -18px rgba(15, 27, 51, 0.1);
+    transition: box-shadow 0.4s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.3s ease;
+  }
+
+  .leaf-panel-highlight {
+    @apply rounded-2xl border-2 border-primary/85 bg-card;
+    box-shadow: 0 0 0 1px oklch(0.72 0.11 235 / 0.12), 0 20px 50px -20px oklch(0.5 0.1 235 / 0.22);
+    transition: box-shadow 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .leaf-step-nav {
+    @apply mt-4 rounded-2xl border border-border/65 bg-card/95 px-3 py-3 backdrop-blur-md;
+    box-shadow: 0 6px 28px -10px rgba(15, 27, 51, 0.12);
+    transition: box-shadow 0.35s ease;
+  }
+
+  .leaf-modal {
+    @apply rounded-[1.2rem] border border-border/75 bg-card;
+    box-shadow: 0 28px 70px -22px rgba(15, 27, 51, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  }
+
+  .leaf-btn-ghost {
+    @apply h-11 px-3 rounded-xl border border-border/80 bg-card font-bold text-sm font-display flex items-center gap-1;
+    @apply transition-all duration-300 ease-out hover:bg-secondary hover:border-border;
+    @apply active:scale-[0.97] disabled:opacity-35 disabled:pointer-events-none;
+  }
+
+  .leaf-btn-primary-solid {
+    @apply h-11 px-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm font-display flex items-center gap-1;
+    @apply shadow-[0_4px_14px_-4px_oklch(0.55_0.12_235_/_0.45)];
+    @apply transition-all duration-300 ease-out hover:brightness-[1.06] active:scale-[0.97];
+    @apply disabled:opacity-35 disabled:pointer-events-none;
   }
 }
