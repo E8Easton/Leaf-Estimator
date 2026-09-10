@@ -1,0 +1,24 @@
+{
+  "name": "Shark Exterior Pricing",
+  "short_name": "Shark Pricing",
+  "description": "Window cleaning quotes, service plans, and on-site pricing for Shark Exterior.",
+  "start_url": "/",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/apple-touch-icon.svg",
+      "sizes": "180x180",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "theme_color": "#0a2443",
+  "background_color": "#0b1220",
+  "display": "standalone"
+}

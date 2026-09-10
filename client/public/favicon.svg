@@ -1,12 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <circle cx="16" cy="16" r="16" fill="#0f1b33"/>
-  <!-- Falcon / wing silhouette -->
-  <path d="M16 6.5 26 24H6L16 6.5Z" fill="#e2e8f0"/>
-  <path d="M16 9 22.5 22H9.5L16 9Z" fill="#94a3b8"/>
-  <!-- Leaf mark -->
-  <path
-    d="M22 20.5c0-4-3.2-6.8-7-6.5 1.8 1.2 2.8 3.4 2.6 5.8.6-.2 1.2-.5 1.7-.9.9.4 1.9.6 2.7.6z"
-    fill="#10b981"
-  />
-  <path d="M15.2 14.5c2.8 1 4.5 3.5 4.3 6.2" stroke="#6ee7b7" stroke-width="0.9" fill="none" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Shark Exterior Pricing">
+  <!-- Navy tile — matches calendar chrome; $ mark = pricing (calendar uses plain shark mark) -->
+  <rect width="32" height="32" rx="7" fill="#0a2443"/>
+  <rect x="1" y="1" width="30" height="30" rx="6" fill="none" stroke="#f15a24" stroke-opacity="0.35" stroke-width="1"/>
+  <!-- Shark fin -->
+  <path d="M11.2 7.2c-.15 2.4-.85 4.8-2.15 6.9-0.95 1.5-2.15 2.8-3.55 3.85 1.85-.2 3.55-.15 5.2.3 1.05.3 2.05.75 2.95 1.35-.3-1.6-.3-3.25.05-4.85.4-1.6 1.15-3.1 2.2-4.35-1.6.05-3.15-.6-4.7-3.2z" fill="#f15a24"/>
+  <!-- Pricing dollar badge -->
+  <circle cx="22.5" cy="22.5" r="6.2" fill="#f15a24"/>
+  <text x="22.5" y="26.2" text-anchor="middle" font-family="Outfit, Arial, sans-serif" font-size="9.5" font-weight="800" fill="#ffffff">$</text>
 </svg>

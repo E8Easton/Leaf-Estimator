@@ -1,5 +1,5 @@
 // ============================================================
-// Leaf Cleaning — Master Pricing Engine
+// Shark Exterior — Master Pricing Engine
 // Based on Gatlin McBride's pricing system (5 videos)
 // Sources:
 //   [1] https://www.youtube.com/watch?v=mDvNqrZPM0Q
@@ -91,14 +91,32 @@ export const CUSTOM_PRICE_PER_PANE = 8; // $8/pane for 121+ pane homes [3]
 
 export type ServiceKey = "exterior" | "interior" | "screens" | "tracks" | "screenSpecial";
 
-// Service plan discount structure from [2]
-export type ServicePlanType = "none" | "monthly" | "quarterly" | "biannual";
+// Service plan discount structure from [2] + Shark Exterior additions
+export type ServicePlanType =
+  | "none"
+  | "monthly"
+  | "quarterly"
+  | "triannual"
+  | "biannual"
+  | "summer";
+
+/** Display order in the estimator plan picker */
+export const SERVICE_PLAN_ORDER: ServicePlanType[] = [
+  "none",
+  "monthly",
+  "quarterly",
+  "triannual",
+  "biannual",
+  "summer",
+];
 
 export const SERVICE_PLAN_DISCOUNT: Record<ServicePlanType, number> = {
   none: 0,
-  biannual: 50,    // $50 off per visit [2]
-  quarterly: 100,  // $100 off per visit [2]
-  monthly: 150,    // $150 off per visit [2]
+  summer: 0,
+  biannual: 50, // $50 off per visit [2]
+  triannual: 75, // $75 off per visit (3× / year)
+  quarterly: 100, // $100 off per visit [2]
+  monthly: 150, // $150 off per visit [2]
 };
 
 // Compatibility alias (older UI naming)
@@ -106,57 +124,75 @@ export const SERVICE_PLAN_DISCOUNTS = SERVICE_PLAN_DISCOUNT;
 
 export const SERVICE_PLAN_LABELS: Record<ServicePlanType, string> = {
   none: "One-Time",
-  biannual: "Biannual Plan",
-  quarterly: "Quarterly Plan",
   monthly: "Monthly Plan",
+  quarterly: "Quarterly Plan",
+  triannual: "Tri-Annual Plan",
+  biannual: "Bi-Annual Plan",
+  summer: "Summer Plan",
 };
 
 export const SERVICE_PLAN_DESCRIPTIONS: Record<ServicePlanType, string> = {
   none: "Single visit, no commitment",
-  biannual: "Every 6 months — save $50 each visit",
-  quarterly: "Every 3 months — save $100 each visit",
   monthly: "Every month — save $150 each visit",
+  quarterly: "Every 3 months — save $100 each visit",
+  triannual: "Every 4 months — save $75 each visit",
+  biannual: "Every 6 months — save $50 each visit",
+  summer: "Once a summer — seasonal exterior clean",
 };
 
 export const SERVICE_PLAN_VISITS: Record<ServicePlanType, number> = {
   none: 1,
+  summer: 1,
   biannual: 2,
+  triannual: 3,
   quarterly: 4,
   monthly: 12,
 };
 
 export interface PlanPerks {
-  leafRainblock: boolean;
+  rainblock: boolean;
   rainGuarantee: boolean;
   hardWaterRemoval: boolean;
-  leafTech: boolean;
+  sharkTech: boolean;
 }
 
 // Used by the UI to show “included perks”.
 export const SERVICE_PLAN_PERKS: Record<ServicePlanType, PlanPerks> = {
   none: {
-    leafRainblock: false,
+    rainblock: false,
     rainGuarantee: false,
     hardWaterRemoval: false,
-    leafTech: false,
+    sharkTech: false,
   },
-  monthly: {
-    leafRainblock: true,
-    rainGuarantee: true,
-    hardWaterRemoval: true,
-    leafTech: true,
-  },
-  quarterly: {
-    leafRainblock: true,
-    rainGuarantee: true,
-    hardWaterRemoval: true,
-    leafTech: true,
+  summer: {
+    rainblock: false,
+    rainGuarantee: false,
+    hardWaterRemoval: false,
+    sharkTech: false,
   },
   biannual: {
-    leafRainblock: false,
+    rainblock: false,
     rainGuarantee: false,
     hardWaterRemoval: false,
-    leafTech: false,
+    sharkTech: false,
+  },
+  triannual: {
+    rainblock: true,
+    rainGuarantee: true,
+    hardWaterRemoval: true,
+    sharkTech: true,
+  },
+  monthly: {
+    rainblock: true,
+    rainGuarantee: true,
+    hardWaterRemoval: true,
+    sharkTech: true,
+  },
+  quarterly: {
+    rainblock: true,
+    rainGuarantee: true,
+    hardWaterRemoval: true,
+    sharkTech: true,
   },
 };
 
